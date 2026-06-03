@@ -1,0 +1,40 @@
+# Model configuration for NDIS Case Note Assistant training
+
+base_model:
+  name: "Qwen3-8B"
+  path: null  # local path or HuggingFace repo id
+  trust_remote_code: true
+
+lora_config:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+training:
+  qlora_bitwidth: 4
+  batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-4
+  num_epochs: 3
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  max_seq_length: 2048
+  fp16: true
+  bf16: false
+  optim: "paged_adamw_8bit"
+
+serving:
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.9
+  max_model_len: 2048
+  dtype: "float16"

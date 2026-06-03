@@ -1,0 +1,97 @@
+# NDIS Case Note — Required Fields (editable compliance rule set)
+# This file drives structural validation. Edit without code changes to
+# update compliance requirements.
+
+required_fields:
+  - field: participant_id
+    type: string
+    required: true
+    description: "De-identified participant reference"
+  - field: date_of_service
+    type: date
+    required: true
+    format: "%Y-%m-%d"
+    description: "Date the service was delivered"
+  - field: duration_minutes
+    type: integer
+    required: true
+    description: "Duration of the session in minutes"
+  - field: service_type
+    type: string
+    required: true
+    options:
+      - "Support Association"
+      - "Assist Daily Life"
+      - "Community Participation"
+      - "Capacity Building"
+      - "Consumed Materials"
+      - "Transportation"
+      - "Group Care Activity"
+      - "Short Term Accommodation"
+      - "Assessment and Reporting"
+      - "Case Management"
+      - "Other"
+    description: "NDIS support category code/title"
+  - field: goal_linkage
+    type: string
+    required: true
+    description: "Which participant goal this service supports"
+  - field: location
+    type: string
+    required: true
+    description: "Where the service was delivered"
+  - field: staff_presented_by
+    type: string
+    required: true
+    description: "Support worker name (de-identified)"
+  - field: participant_present
+    type: boolean
+    required: true
+    description: "Whether the participant was present"
+  - field: narrative_summary
+    type: string
+    required: true
+    description: "Narrative of what occurred during the session"
+  - field: billable_evidence
+    type: string
+    required: true
+    description: "Evidence supporting billing (activities, techniques, outcomes)"
+  - field: outcomes_achieved
+    type: array_of_strings
+    required: true
+    description: "Specific outcomes or progress noted"
+  - field: risk_management
+    type: string
+    required: false
+    description: "Any risks identified or interventions taken (optional but encouraged)"
+  - field: follow_up_needed
+    type: boolean
+    required: true
+    description: "Whether follow-up is indicated"
+  - field: follow_up_notes
+    type: string
+    required: false
+    description: "Notes for next session (optional)"
+
+structure_order:
+  - participant_id
+  - date_of_service
+  - duration_minutes
+  - service_type
+  - goal_linkage
+  - location
+  - staff_presented_by
+  - participant_present
+  - narrative_summary
+  - billable_evidence
+  - outcomes_achieved
+  - risk_management
+  - follow_up_needed
+  - follow_up_notes
+
+tone_guidelines:
+  professional: true
+  objective_language: true
+  third_person: true
+  no_clinical_jargon_for_external_audience: true
+  past_tense: true

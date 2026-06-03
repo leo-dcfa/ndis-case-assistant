@@ -1,0 +1,58 @@
+[project]
+name = "ndis-case-note-assistant"
+version = "0.1.0"
+description = "Fine-tuned small model for structured NDIS case note generation"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    # Core ML
+    "torch>=2.5.0",
+    "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git",
+    "trl>=0.13.0",
+    "peft>=0.13.0",
+    "transformers>=4.48.0",
+
+    # Quantization & serving
+    "bitsandbytes>=0.44.0",
+    "vllm>=0.6.0",
+
+    # Data & validation
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "pyyaml>=6.0",
+    "pandas>=2.2.0",
+
+    # API layer
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "httpx>=0.28.0",
+
+    # Synthetic data generation
+    "openai>=1.60.0",  # for API call to open-weight teacher model
+    "python-dotenv>=1.0.0",
+
+    # Evaluation
+    "scikit-learn>=1.6.0",
+    "numpy>=2.1.0",
+
+    # Utilities
+    "rich>=13.9.0",
+    "click>=8.1.0",
+    "tqdm>=4.67.0",
+    "jinja2>=3.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.9.0",
+    "mypy>=1.14.0",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 99
+
+[tool.pyright]
+pythonVersion = "3.12"
