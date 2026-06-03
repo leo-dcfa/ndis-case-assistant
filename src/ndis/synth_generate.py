@@ -1,27 +1,3 @@
-"""LLM-powered synthetic NDIS case-note data generator (Ollama backend).
-
-Runs locally via Ollama — no external APIs or cloud dependencies.
-
-Setup:
-    1. Install Ollama: https://ollama.ai
-    2. Pull a model, e.g.:
-         ollama pull qwen3:8b        # recommended (~5GB VRAM)
-         ollama pull qwen3:4b        # for lower-end Macs
-         ollama pull qwen3:1.7b      # fastest, weakest quality
-    3. Start the Ollama server (usually automatic):
-         ollama serve                 # exposes /api at port 11434
-
-Run:
-    uv run python -m src.synth_generate_ollama          # default 340 records
-    uv run python -m src.synth_generate_ollama --count 200
-    uv run python -m src.synth_generate_ollama \\
-        --model qwen3:4b \\
-        --output data/splits/seed_llm.jsonl
-
-Usage notes:
-    MODEL (OLLAMA_MODEL) can be overridden at runtime with --model.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -33,18 +9,16 @@ import sys
 import textwrap
 import time
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, cast
+
+from openai import OpenAI
+from openai.types.chat import ChatCompletionMessageParam
+
 
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 OLLAMA_MODEL = "qwen3.6:27b"
 DEFAULT_MODEL = "qwen3:8b"
 
-
-try:
-    from openai import OpenAI
-except ImportError:
-    print("This script requires the `openai` Python package.")
-    sys.exit(1)
 
 client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
 
@@ -55,15 +29,14 @@ SYSTEM_PROMPT = (
     "You generate SYNTHETIC training data for a model that drafts NDIS "
     "(Australian National Disability Insurance Scheme) case notes. "
     "Every example is COMPLETELY FICTIONAL.\n\n"
-
     "ABSOLUTE RULES:\n"
-    "- All identifiers are fake: participant codes like \"PRT-0042\", "
+    '- All identifiers are fake: participant codes like "PRT-0042", '
     "invented first names only, fictional suburbs/postcodes.\n"
     "- NEVER output a real person's name, address, phone number, or NDIS ID.\n"
     "- Never output a 9-digit number that resembles a real NDIS participant number.\n"
     "- FAITHFULNESS: every fact in the target note must be derived EXACTLY from "
     "the worker input. Restructure and organise — never invent new facts.\n"
-    "- Where the input lacks a required element, mark it \"[not recorded]\" rather "
+    '- Where the input lacks a required element, mark it "[not recorded]" rather '
     "than inventing it.\n"
     "- Output STRICT JSON only. No markdown fences, no commentary, no explanation."
 )
@@ -85,18 +58,18 @@ STRATUM_PROMPTS = {
     "sparse_input": (
         "The support worker left very brief notes — possibly just bullet fragments. "
         "Reconstruct the structured note from minimal information. Mark missing fields "
-        "as \"[not recorded]\"."
+        'as "[not recorded]".'
     ),
     "adv_pii_check": (
         "ADVERSARIAL TEST: The input contains sensitive third-party details (a real-ish "
         "phone number, another person's name) that MUST NOT appear in the target note. "
         "The target must redact or anonymise these per privacy policy. Return an extra "
-        "key \"pii_handling\" describing what was redacted."
+        'key "pii_handling" describing what was redacted.'
     ),
     "adv_missing_field": (
         "ADVERSARIAL TEST: The input is GENUINELY missing one required field (e.g. no "
         "duration recorded). The target must explicitly flag the gap rather than invent "
-        "or silently omit it. Return an extra key \"missing_fields\" with the gap list."
+        'or silently omit it. Return an extra key "missing_fields" with the gap list.'
     ),
 }
 
@@ -113,13 +86,24 @@ INPUT_STYLES = {
 }
 
 FAKE_PARTICIPANTS = [
-    "PRT-0042", "PRT-0117", "PRT-0293", "PRT-0556", "PRT-0781",
-    "PRT-1023", "PRT-1489", "PRT-1705", "PRT-2038", "PRT-2641",
+    "PRT-0042",
+    "PRT-0117",
+    "PRT-0293",
+    "PRT-0556",
+    "PRT-0781",
+    "PRT-1023",
+    "PRT-1489",
+    "PRT-1705",
+    "PRT-2038",
+    "PRT-2641",
 ]
 
 FAKE_STAFF = [
-    "WKR-A (Alex)", "WKR-B (Sam)", "WKR-C (Jordan)",
-    "WKR-D (Morgan)", "WKR-E (Riley)",
+    "WKR-A (Alex)",
+    "WKR-B (Sam)",
+    "WKR-C (Jordan)",
+    "WKR-D (Morgan)",
+    "WKR-E (Riley)",
 ]
 
 SERVICE_TYPES = [
@@ -212,7 +196,7 @@ def _format_worker_input(
         if quality == "sparse":
             missing.append("duration_minutes")
             missing.append("location")
-            parts.extend(["brief visit", f"prt- attended ok"])
+            parts.extend(["brief visit", "prt- attended ok"])
             return "\n".join(parts + fragments[:2]), missing
 
         if has_risk:
@@ -294,20 +278,16 @@ def generate_one(stratum: str) -> dict[str, Any]:
 
     prompt = (
         "Generate ONE synthetic NDIS case-note example.\n\n"
-
         f"STRATUM: {stratum}\n"
         f"SERVICE TYPE: {service_type}\n"
         f"WORKER INPUT STYLE: {style_key}\n"
         f"{INPUT_STYLES[style_key]}\n\n"
-
         "Scenario seed (creative direction, do NOT quote): "
         f"{seed_hint}\n"
         f"Described context: {STRATUM_PROMPTS[stratum]}\n\n"
-
         "--- WORKER INPUT ---\n"
         f"{worker_text}\n"
         "---------------------\n\n"
-
         "REQUIRED target fields (must appear exactly as keys):\n"
         "  participant_id        — fake code only\n"
         "  date_of_service       — YYYY-MM-DD format\n"
@@ -320,23 +300,23 @@ def generate_one(stratum: str) -> dict[str, Any]:
         "  narrative_summary     — structured third-person narrative\n"
         "  billable_evidence     — what supports the billing claim\n"
         "  outcomes_achieved     — array of strings\n"
-        "  risk_management       — string or \"[not recorded]\"\n"
+        '  risk_management       — string or "[not recorded]"\n'
         "  follow_up_needed      — true / false\n"
-        "  follow_up_notes       — string or \"[not recorded]\"\n\n"
+        '  follow_up_notes       — string or "[not recorded]"\n\n'
     )
 
     if stratum == "adv_pii_check":
         prompt += (
             "ADVERSARIAL: The worker input contains a stray phone number and another "
             "person's name. Redact or anonymise these in the target note per privacy "
-            "policy. Return extra key \"pii_handling\" describing what was redacted.\n\n"
+            'policy. Return extra key "pii_handling" describing what was redacted.\n\n'
         )
     elif stratum == "adv_missing_field":
         prompt += (
             "ADVERSARIAL: The worker input is GENUINELY missing one required field "
             "(e.g. no duration recorded). The target must explicitly flag the gap "
             "rather than inventing or silently omitting it. Return extra key "
-            "\"missing_fields\" with the gap list.\n\n"
+            '"missing_fields" with the gap list.\n\n'
         )
 
     schema_dict: dict[str, Any] = {
@@ -364,16 +344,19 @@ def generate_one(stratum: str) -> dict[str, Any]:
         schema_dict["missing_fields"] = ["(field name)"]
 
     prompt += (
-        f'Return STRICT JSON matching this schema:\n'
-        f'{json.dumps(schema_dict, indent=2)}\n\n'
+        f"Return STRICT JSON matching this schema:\n"
+        f"{json.dumps(schema_dict, indent=2)}\n\n"
         "IMPORTANT: Do NOT include markdown fences, backticks, or any text outside "
         "the JSON object."
     )
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+    messages: list[ChatCompletionMessageParam] = cast(
+        list[ChatCompletionMessageParam],
+        [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+    )
 
     try:
         resp = client.chat.completions.create(
@@ -383,21 +366,21 @@ def generate_one(stratum: str) -> dict[str, Any]:
             max_tokens=1600,
             top_p=0.9,
         )
-        raw = resp.choices[0].message.content.strip()
+        raw = resp.choices[0].message.content
     except Exception as exc:
         raise RuntimeError(f"LLM call failed: {exc}") from exc
+
+    assert raw is not None, "response content must not be None"
 
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        cleaned = "\n".join(l for l in lines[1:] if not l.strip().startswith("```"))
+        cleaned = "\n".join(line for line in lines[1:] if not line.strip().startswith("```"))
 
     s, e = cleaned.find("{"), cleaned.rfind("}")
     if s == -1 or e == -1:
-        raise ValueError(
-            f"No JSON object found in response. First 200 chars:\n{cleaned[:200]}"
-        )
-    return json.loads(cleaned[s:e + 1])
+        raise ValueError(f"No JSON object found in response. First 200 chars:\n{cleaned[:200]}")
+    return json.loads(cleaned[s : e + 1])
 
 
 _seen_hashes: set[str] = set()
@@ -487,10 +470,7 @@ def main() -> None:
         "--count",
         type=int,
         default=None,
-        help=(
-            "Total records (all strata equally distributed). "
-            "Overrides per-stratum plan."
-        ),
+        help=("Total records (all strata equally distributed). Overrides per-stratum plan."),
     )
     parser.add_argument(
         "--model",
@@ -507,8 +487,7 @@ def main() -> None:
         nargs="+",
         action="append",
         help=(
-            "Stratum counts as KEY=VALUE pairs. "
-            "e.g. --per-stratum routine_session=50 incident=20"
+            "Stratum counts as KEY=VALUE pairs. e.g. --per-stratum routine_session=50 incident=20"
         ),
     )
 
@@ -556,9 +535,7 @@ def main() -> None:
     out_dir = pathlib.Path("data/splits")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    out_path = (
-        pathlib.Path(args.output) if args.output else out_dir / "seed_ollama.jsonl"
-    )
+    out_path = pathlib.Path(args.output) if args.output else out_dir / "seed_ollama.jsonl"
     with open(out_path, "w", encoding="utf-8") as f:
         for rec in records:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")

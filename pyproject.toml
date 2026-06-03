@@ -38,6 +38,7 @@ dev = []
 target-version = "py314"
 line-length = 99
 
+
 [tool.pyright]
 pythonVersion = "3.14"
 
