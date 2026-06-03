@@ -1,165 +1,130 @@
-"""NDIS CaseNote Pydantic schema.
+"""NDIS CaseNote Pydantic model + compliance validation.
 
-This module defines the canonical data model for NDIS case notes.
-It is used by:
-  - `data/synth_generate.py` to validate synthetic outputs
-  - `eval/rubric.py` to score structural compliance
-  - `serve/api.py` for API request/response validation
+Loads required fields from config/required_fields.yaml so the compliance
+rule set is editable without code changes (PRD §5.1).
 """
 
 from __future__ import annotations
 
-import re
+import json
+import pathlib
 from datetime import date, datetime
-from enum import Enum
-from typing import Annotated, Any, Optional
+from typing import Any, List, Optional
 
-from pydantic import (
-    BaseModel,
-    Field,
-    field_validator,
-    model_validator,
-)
+import yaml
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+# ---------------------------------------------------------------------------
+# Config loader
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = pathlib.Path(__file__).resolve().parents[1] / "config" / "required_fields.yaml"
 
 
-class ServiceType(str, Enum):
-    SUPPORT_ASSOCIATION = "Support Association"
-    ASSIST_DAILY_LIFE = "Assist Daily Life"
-    COMMUNITY_PARTICIPATION = "Community Participation"
-    CAPACITY_BUILDING = "Capacity Building"
-    CONSUMED_MATERIALS = "Consumed Materials"
-    TRANSPORTATION = "Transportation"
-    GROUP_CARE_ACTIVITY = "Group Care Activity"
-    SHORT_TERM_ACCOMMODATION = "Short Term Accommodation"
-    ASSESSMENT_REPORTING = "Assessment and Reporting"
-    CASE_MANAGEMENT = "Case Management"
-    OTHER = "Other"
+def _load_required_fields() -> dict[str, dict[str, Any]]:
+    """Return {field_name: field_spec} from required_fields.yaml."""
+    text = CONFIG_PATH.read_text()
+    cfg = yaml.safe_load(text)
+    fields: dict[str, dict[str, Any]] = {}
+    for spec in cfg.get("required_fields", []):
+        fields[spec["field"]] = spec
+    return fields
+
+
+_REQUIRED_FIELDS = _load_required_fields()
+
+_STRUCTURE_ORDER: list[str] = [
+    f["field"] for f in _REQUIRED_FIELDS.values() if f.get("required")
+]
+
+
+# ---------------------------------------------------------------------------
+# CaseNote schema
+# ---------------------------------------------------------------------------
 
 
 class CaseNote(BaseModel):
-    """A structured NDIS case note with compliance-ready validation."""
+    """Structured NDIS case note. Fields driven by config/required_fields.yaml."""
 
-    # --- Identifiers (de-identified) ---
-    participant_id: str = Field(
-        description="De-identified participant reference (e.g. P-XXXX)",
-        min_length=3,
-        max_length=50,
-    )
-    staff_presented_by: str = Field(
-        description="Support worker name (de-identified)",
-        min_length=2,
-        max_length=100,
-    )
+    model_config = {"extra": "forbid"}
 
-    # --- Service metadata ---
+    participant_id: str = Field(description="De-identified participant reference")
     date_of_service: date = Field(description="Date the service was delivered")
-    duration_minutes: int = Field(
-        ge=5,
-        le=480,
-        description="Duration of the session in minutes",
-    )
-    service_type: ServiceType = Field(description="NDIS support category code/title")
-    goal_linkage: str = Field(
-        min_length=3,
-        max_length=500,
-        description="Which participant goal this service supports",
-    )
-    location: str = Field(
-        min_length=2,
-        max_length=500,
-        description="Where the service was delivered",
-    )
+    duration_minutes: int = Field(description="Duration of the session in minutes")
+    service_type: str = Field(description="NDIS support category/title")
+    goal_linkage: str = Field(description="Which participant goal this service supports")
+    location: str = Field(description="Where the service was delivered")
+    staff_presented_by: str = Field(description="Support worker name (de-identified)")
     participant_present: bool = Field(description="Whether the participant was present")
-
-    # --- Narrative content ---
-    narrative_summary: Annotated[
-        str,
-        Field(min_length=20, description="Narrative of what occurred during the session"),
-    ]
-    billable_evidence: Annotated[
-        str,
-        Field(min_length=10, description="Evidence supporting billing (activities, techniques)"),
-    ]
-
-    # --- Outcomes ---
-    outcomes_achieved: list[str] = Field(
-        min_length=1,
-        max_length=20,
-        description="Specific outcomes or progress noted",
-    )
-
-    # --- Risk & follow-up (optional fields) ---
-    risk_management: Optional[str] = Field(
-        default=None,
-        description="Any risks identified or interventions taken",
-    )
+    narrative_summary: str = Field(description="Narrative of what occurred during the session")
+    billable_evidence: str = Field(description="Evidence supporting billing")
+    outcomes_achieved: List[str] = Field(description="Specific outcomes or progress noted")
+    risk_management: Optional[str] = Field(default=None, description="Risks identified or interventions")
     follow_up_needed: bool = Field(description="Whether follow-up is indicated")
-    follow_up_notes: Optional[str] = Field(
-        default=None,
-        description="Notes for next session (optional)",
-    )
+    follow_up_notes: Optional[str] = Field(default=None, description="Notes for next session")
 
-    # --- Validation ---
-    @field_validator("participant_id")
+    # ---- computed / validation helpers ------------------------------------
+
+    @property
+    def required_fields_list(self) -> list[str]:
+        """Fields that are required, in config order."""
+        return list(_STRUCTURE_ORDER)
+
+    @field_validator("service_type")
     @classmethod
-    def _validate_participant_id(cls, v: str) -> str:
-        """Ensure participant ID does not look like a real name or PII."""
-        if re.match(r"^[Pp]\d{3,10}$", v):
-            return v
-        # Accept any de-identified format but warn via length check
-        if len(v) >= 3:
-            return v
-        raise ValueError("participant_id must be a de-ified identifier (at least 3 chars)")
+    def _check_service_type(cls, v: str) -> str:
+        allowed = _REQUIRED_FIELDS.get("service_type", {}).get("options", [])
+        if allowed and v not in allowed:
+            raise ValueError(f"service_type must be one of {allowed}, got '{v}'")
+        return v
 
-    @field_validator("narrative_summary")
+    @field_validator("date_of_service")
     @classmethod
-    def _validate_not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("narrative_summary cannot be blank")
-        return v.strip()
+    def _check_date_format(cls, v: date) -> date:
+        if not isinstance(v, date):
+            raise ValueError("date_of_service must be a date")
+        return v
 
-    @field_validator("billable_evidence")
+    @field_validator("duration_minutes")
     @classmethod
-    def _validate_not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("billable_evidence cannot be blank")
-        return v.strip()
+    def _check_duration(cls, v: int) -> int:
+        if v <= 0 or v > 1440:
+            raise ValueError("duration_minutes must be between 1 and 1439")
+        return v
 
-    def to_jsonl_record(self) -> dict[str, Any]:
-        """Serialize to a JSONL-friendly dict for training / eval datasets."""
-        return {
-            "participant_id": self.participant_id,
-            "date_of_service": self.date_of_service.isoformat(),
-            "duration_minutes": self.duration_minutes,
-            "service_type": self.service_type.value,
-            "goal_linkage": self.goal_linkage,
-            "location": self.location,
-            "staff_presented_by": self.staff_presented_by,
-            "participant_present": self.participant_present,
-            "narrative_summary": self.narrative_summary,
-            "billable_evidence": self.billable_evidence,
-            "outcomes_achieved": self.outcomes_achieved,
-            "risk_management": self.risk_management,
-            "follow_up_needed": self.follow_up_needed,
-            "follow_up_notes": self.follow_up_notes,
-        }
+    @model_validator(mode="after")
+    def check_required_present(self) -> "CaseNote":
+        """Ensure all required fields are non-empty (PRD §6.1 automated checks)."""
+        for field_name in _STRUCTURE_ORDER:
+            val = getattr(self, field_name)
+            if isinstance(val, str) and not val.strip():
+                raise ValueError(f"required field '{field_name}' is empty")
+            if isinstance(val, list) and len(val) == 0:
+                raise ValueError(f"required field '{field_name}' is empty list")
+        return self
+
+    def to_dict(self, exclude_none: bool = True) -> dict[str, Any]:
+        """Serialize for JSONL storage."""
+        d = self.model_dump(exclude_none=exclude_none)
+        # dates serialise as ISO strings automatically in model_dump
+        return d
 
     @classmethod
-    def from_jsonl_record(cls, record: dict[str, Any]) -> CaseNote:
-        """Deserialize a JSONL record back into a CaseNote."""
-        return cls(
-            participant_id=record["participant_id"],
-            date_of_service=datetime.fromisoformat(record["date_of_service"]).date(),
-            duration_minutes=record["duration_minutes"],
-            service_type=ServiceType(record["service_type"]),
-            goal_linkage=record["goal_linkage"],
-            location=record["location"],
-            staff_presented_by=record["staff_presented_by"],
-            participant_present=record["participant_present"],
-            narrative_summary=record["narrative_summary"],
-            billable_evidence=record["billable_evidence"],
-            outcomes_achieved=record["outcomes_achieved"],
-            risk_management=record.get("risk_management"),
-            follow_up_needed=record["follow_up_needed"],
-            follow_up_notes=record.get("follow_up_notes"),
-        )
+    def from_dict(cls, data: dict[str, Any]) -> "CaseNote":
+        """Deserialize from a dict (e.g. loaded from JSONL)."""
+        if isinstance(data.get("date_of_service"), str):
+            data = dict(data)  # copy so we don't mutate the input
+            data["date_of_service"] = datetime.strptime(
+                data["date_of_service"], "%Y-%m-%d"
+            ).date()
+        return cls(**data)
+
+    @classmethod
+    def from_jsonl_line(cls, line: str) -> "CaseNote":
+        """Parse a single JSONL record."""
+        return cls.from_dict(json.loads(line))
+
+    @property
+    def structure_order(self) -> list[str]:
+        """Field order as defined in config."""
+        return list(_STRUCTURE_ORDER)

@@ -1,321 +1,351 @@
-"""Synthetic seed data generator for NDIS case notes.
+"""Synthetic seed-data generator for NDIS case notes.
 
-Generates realistic but entirely fake input → target note pairs, stratified
-across every required stratum (§6.2 of the PRD).  Uses template-based synthesis
-with parameterised values so no real participant data is ever needed.
+Produces realistic-but-fake input → target-note pairs, stratified across
+all required strata (PRD §6.2).  Uses only deterministic Python + random —
+no LLM calls needed for the seed set.
 
-Usage:
-    # Generate a full stratified dataset
-    python -m data.synth_generate --count 500 --output data/splits/seed.jsonl
-
-    # Or import and generate programmatically
-    from data.synth_generate import generate_stratified_dataset
-    dataset = generate_stratified_dataset(count_per_stratum=20)
+Run:
+    python -m data.synth_generate --count 20          # default
+    python -m data.synth_generate --count 100 --output data/splits/seed.jsonl
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import random
-import sys
-from pathlib import Path
+import textwrap
+from datetime import date, timedelta
 from typing import Any
 
-# Ensure project root is on sys.path so imports work with `python -m` invocation
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
-from data.schema import CaseNote, ServiceType  # noqa: E402
+random.seed(42)  # reproducible
 
 # ---------------------------------------------------------------------------
-# Randomised value pools (all fake)
+# Constants — fake but realistic data pools
 # ---------------------------------------------------------------------------
 
-PARTICIPANT_NAMES = [
+FAKE_PARTICIPANTS = [
     "P-1001", "P-1002", "P-1003", "P-1004", "P-1005",
-    "P-1006", "P-1007", "P-1008", "P-1009", "P-1010",
+    "P-2001", "P-2002", "P-2003", "P-3001", "P-3002",
 ]
 
-STAFF_NAMES = [
+FAKE_STAFF = [
     "Worker-A", "Worker-B", "Worker-C", "Worker-D", "Worker-E",
 ]
 
+SERVICE_TYPES = [
+    "Support Association",
+    "Assist Daily Life",
+    "Community Participation",
+    "Capacity Building",
+    "Consumed Materials",
+    "Transportation",
+    "Group Care Activity",
+    "Short Term Accommodation",
+    "Assessment and Reporting",
+    "Case Management",
+    "Other",
+]
+
 LOCATIONS = [
-    "Participant's home (42 Example St, Suburb)",
-    "Community centre — Central Park",
-    "Local shopping centre — Westfield",
-    "Neighbourhood group activity room",
-    "Day program venue",
-    "Public transport route (bus/tram)",
-    "Support worker's office (de-identified)",
-    "Gymnasium (community facility)",
+    "Participant's home",
+    "Community centre",
+    "Local park",
+    "NDIS provider facility",
+    "Local shop / mall",
+    "Vocational workshop",
+    "Therapy clinic",
+    "Group home",
+    "Virtual (video call)",
+    "Residential aged care facility",
 ]
 
 GOALS = [
-    "Increase independence in daily living tasks (Goal 1 — Core Supports)",
-    "Develop social skills and community participation (Goal 3 — Capacity Building)",
-    "Improve ability to maintain a healthy lifestyle (Goal 2 — Capacity Building)",
-    "Enhance communication and conflict resolution (Goal 4 — Capacity Building)",
-    "Build confidence using public transport independently (Goal 5 — Core Supports)",
-    "Participate in community events without support escalation (Goal 2 — Capacity Building)",
-    "Manage personal finances with growing independence (Goal 6 — Capacity Building)",
+    "Increase independence in daily living",
+    "Build social connections and community participation",
+    "Develop vocational skills for employment readiness",
+    "Improve personal safety and risk management",
+    "Manage daily finances independently",
+    "Enhance communication skills",
+    "Establish a consistent daily routine",
+    "Reduce reliance on informal carers",
+    "Complete NDIS plan review documentation",
+    "Access local health services",
 ]
 
 NARRATIVE_TEMPLATES = {
-    "routine_session": [
-        "Attended participant's residence at {time}. Accompanied the participant to the local supermarket for grocery shopping as part of daily living skills development. Participant was independent in selecting items but required prompting to stay within budget. Used $50 from the participant's petty cash fund.",
-        "Support worker arrived at 09:30 to begin the weekly community access session. Supported the participant with meal preparation in their kitchenette. Participant followed a visual recipe card and independently prepared pasta with sauce. Reviewed nutrition labels together to support healthy food choices.",
-        "Provided personal care support in the morning routine as scheduled. Assisted with showering and dressing with verbal prompting only — no physical assistance required. The participant expressed satisfaction with how they managed their appearance for the day.",
+    "Routine session": [
+        "{staff} supported {pid} with {activity}. {pid} was in a good mood and engaged well. The activity ran as planned for approximately {duration} minutes.",
+        "{staff} attended {pid}'s residence at {time_am_pm} to provide {service_type} support. {pid} was ready on time. {narrative_detail}",
     ],
-    "incident_note": [
-        "At approximately 14:00, observed the participant become visibly distressed when a planned community outing was cancelled due to adverse weather. Supported the participant by discussing alternative indoor activities. Participant initially refused to engage but eventually agreed to watch a DVD in their room with a companion phone call from a family member.",
-        "Incident reported at 16:30: participant's neighbour notified support team that participant had fallen while attempting to carry laundry upstairs. Emergency services were not required. Attended the residence to assess safety. Assisted participant back to ground-floor bedroom and reviewed home hazards with the NDIS planner on call.",
+    "Incident note": [
+        "During the scheduled session, an unexpected incident occurred involving {incident_desc}. {staff} followed incident response procedures. {pid} was unharmed.",
+        "{staff} was providing {service_type} support when {incident_desc}. The situation was managed according to protocol.",
     ],
-    "capacity_building": [
-        "Facilitated a group cooking workshop at the community kitchen with 4 other participants. The session focused on basic meal planning and budgeting. Participant contributed actively, preparing a salad and comparing prices between two grocery brands. Documented key learnings in their personal goals journal.",
-        "Supported the participant to attend a TAFE orientation session for a short course in customer service. Accompanied to campus, introduced them to the course coordinator, and assisted with completing enrolment paperwork. Participant appeared motivated and expressed interest in completing the application.",
-    ],
-    "sparse_input": [
-        "Met with participant at their home. Did grocery shopping together. Participant seemed okay today.",
-        "Morning visit. Helped make breakfast. Watched TV for a bit. Left at noon.",
-        "Visited P-1002. They wanted to go to the shops but were too tired. Stayed and chatted instead.",
-    ],
-    "edge_case": [
-        "Participant arrived unexpectedly at the support worker's office at 08:45, having missed their scheduled bus service (arranged via group transport). No pre-booking was in place. Discussed rescheduling options and provided a phone number to call for future unplanned pickups. Documented as a potential transport gap requiring discussion with the coordinator.",
-        "The participant's family member (mother) attended the session unannounced to discuss concerns about an upcoming change of support worker. The participant appeared uncomfortable with this conversation. Advised the mother that future discussions about care changes should be scheduled formally through the plan manager, and offered to schedule a three-way call.",
+    "Sparse-input": [
+        "{staff} supported {pid}. Session focused on daily living tasks. Progress noted.",
+        "{pid} attended a session with {staff}. Support provided as scheduled.",
     ],
 }
 
-SERVICE_TYPES_FOR_STRATUM = {
-    "routine_session": [ServiceType.SUPPORT_ASSOCIATION, ServiceType.ASSIST_DAILY_LIFE],
-    "incident_note": [ServiceType.CASE_MANAGEMENT, ServiceType.ASSESSMENT_REPORTING],
-    "capacity_building": [ServiceType.CAPACITY_BUILDING, ServiceType.COMMUNITY_PARTICIPATION],
-    "sparse_input": [ServiceType.SUPPORT_ASSOCIATION, ServiceType.CONSUMED_MATERIALS],
-    "edge_case": [ServiceType.CASE_MANAGEMENT, ServiceType.GROUP_CARE_ACTIVITY],
-}
+NARRATIVE_DETAIL_POOL = [
+    "Tasks included meal preparation and household organisation.",
+    "They went to the local grocery store where {pid} practiced shopping independently.",
+    "A walking exercise was conducted around the neighbourhood.",
+    "{pid} completed a personal care routine with minimal prompting.",
+    "Group activity at the community centre included art and crafts.",
+    "Transportation was provided to a medical appointment.",
+    "Virtual check-in confirmed {pid}'s wellbeing and upcoming schedule.",
+    "Role-play exercises were practiced for employment readiness.",
+]
 
-OUTCOME_TEMPLATES = {
-    "routine_session": [
-        "Participant independently selected three groceries without prompting",
-        "Improved ability to use the public card reader at checkout",
-        "Completed meal preparation using visual supports with 75% independence",
-        "Maintained appropriate spending within allocated budget",
-    ],
-    "incident_note": [
-        "Participant calmed after 20 minutes of de-escalation strategies were applied",
-        "Safety of the home environment confirmed during follow-up visit",
-        "Plan manager was notified and a meeting scheduled for next week",
-        "Incident report filed in accordance with NDIS incident management policy",
-    ],
-    "capacity_building": [
-        "Participant successfully prepared two meals from scratch with minimal prompting",
-        "Participant completed course enrolment paperwork independently after scaffolding",
-        "Demonstrated improved confidence when interacting with shop staff",
-        "Group leader noted positive engagement in peer discussions",
-    ],
-    "sparse_input": [
-        "Groceries purchased within budget",
-        "Breakfast consumed without assistance",
-        "Participant restful and cooperative during visit",
-    ],
-    "edge_case": [
-        "Alternative phone-based support provided as contingency",
-        "Mother was advised on formal escalation pathway for care concerns",
-        "Transport coordinator to review group transport schedule",
-    ],
-}
+INCIDENT_DESCS = [
+    "the participant reported feeling unwell",
+    "a family member arrived unexpectedly",
+    "the scheduled vehicle was delayed by over 30 minutes",
+    "the participant became upset about a change in routine",
+    "weather conditions prevented an outdoor activity",
+]
 
-TIMES = ["08:00", "09:30", "10:00", "10:30", "11:00", "14:00", "15:00", "16:00"]
+OUTCOME_POOL = [
+    "Increased confidence in daily tasks",
+    "Improved social interaction with peers",
+    "Completed planned activity independently",
+    "Identified barriers to further progress",
+    "Maintained consistent attendance this month",
+    "Practiced coping strategies effectively",
+    "Progressed towards goal: {goal}",
+]
 
 
 # ---------------------------------------------------------------------------
-# Synthetic data generation functions
+# Strata definitions
 # ---------------------------------------------------------------------------
 
-def _random_date() -> str:
-    """Return a random date string in YYYY-MM-DD format within 2025."""
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)
-    return f"2025-{month:02d}-{day:02d}"
+STRATA = {
+    "routine_session": {
+        "weight": 0.35,
+        "narrative_type": "Routine session",
+        "service_types": ["Assist Daily Life", "Support Association", "Community Participation"],
+    },
+    "incident": {
+        "weight": 0.10,
+        "narrative_type": "Incident note",
+        "service_types": ["Assist Daily Life", "Community Participation", "Group Care Activity"],
+        "always_has_risk": True,
+    },
+    "capacity_building": {
+        "weight": 0.15,
+        "narrative_type": "Routine session",
+        "service_types": ["Capacity Building", "Assessment and Reporting", "Case Management"],
+    },
+    "consumed_materials": {
+        "weight": 0.08,
+        "narrative_type": "Routine session",
+        "service_types": ["Consumed Materials"],
+    },
+    "transportation": {
+        "weight": 0.07,
+        "narrative_type": "Routine session",
+        "service_types": ["Transportation"],
+    },
+    "group_care": {
+        "weight": 0.07,
+        "narrative_type": "Routine session",
+        "service_types": ["Group Care Activity", "Short Term Accommodation"],
+    },
+    "sparse_input": {
+        "weight": 0.12,
+        "narrative_type": "Sparse-input",
+        "service_types": SERVICE_TYPES,
+    },
+    "edge_case": {
+        "weight": 0.06,
+        "narrative_type": "Incident note",
+        "service_types": ["Assist Daily Life", "Short Term Accommodation", "Other"],
+        "always_has_risk": True,
+    },
+}
 
 
-def _random_duration(stratum: str) -> int:
-    durations = {
-        "routine_session": [60, 90, 120],
-        "incident_note": [30, 45, 60, 90],
-        "capacity_building": [90, 120, 180],
-        "sparse_input": [30, 45, 60],
-        "edge_case": [60, 90],
-    }
-    return random.choice(durations[stratum])
+# ---------------------------------------------------------------------------
+# Generation
+# ---------------------------------------------------------------------------
+
+def _pick_weighted(choices: list[tuple[str, float]]) -> str:
+    total = sum(w for _, w in choices)
+    r = random.random() * total
+    cumulative = 0.0
+    for item, weight in choices:
+        cumulative += weight
+        if r <= cumulative:
+            return item
+    return choices[-1][0]
 
 
-def generate_single_record(stratum: str, idx: int) -> dict[str, Any]:
-    """Generate one synthetic input → target pair for the given stratum."""
-    participant = random.choice(PARTICIPANT_NAMES)
-    staff = random.choice(STAFF_NAMES)
-    location = random.choice(LOCATIONS)
+def _random_date(start_year: int = 2025) -> date:
+    start = date(start_year, 1, 1)
+    delta = random.randint(0, 364)
+    return start + timedelta(days=delta)
+
+
+def _random_duration(stype: str) -> int:
+    if stype in ("Transportation", "Consumed Materials"):
+        return random.choice([15, 30, 45])
+    return random.choice([30, 45, 60, 90, 120])
+
+
+def generate_single_note(stype: str | None = None) -> dict[str, Any]:
+    """Generate one synthetic case-note pair (input + target)."""
+
+    # Pick stratum if service type not pre-specified
+    if stype is None:
+        stratum_name = _pick_weighted(list(STRATA.items()))
+    else:
+        # Find matching strata
+        candidates = [(k, v) for k, v in STRATA.items() if stype in v["service_types"]]
+        if not candidates:
+            candidates = list(STRATA.items())
+        stratum_name = _pick_weighted(candidates)
+
+    s = STRATA[stratum_name]
+    narrative_type = s["narrative_type"] if isinstance(s.get("narrative_type"), str) else "Routine session"
+    service_pool = s["service_types"]
+    svc_type: str = random.choice(service_pool)
+
+    pid = random.choice(FAKE_PARTICIPANTS)
+    staff = random.choice(FAKE_STAFF)
     goal = random.choice(GOALS)
-    service_types = SERVICE_TYPES_FOR_STRATUM[stratum]
-    service_type = random.choice(service_types)
-    narrative_template = random.choice(NARRATIVE_TEMPLATES[stratum])
-    time_str = random.choice(TIMES)
-    duration = _random_duration(stratum)
+    location = random.choice(LOCATIONS)
+    svc_date = _random_date()
+    duration = _random_duration(svc_type) if stype is None else _random_duration(stype)
+    present = random.choice([True, False])
 
-    narrative_text = narrative_template.format(time=time_str, participant=participant)
+    # Narrative
+    templates = NARRATIVE_TEMPLATES[narrative_type]
+    template = random.choice(templates)
+    detail = random.choice(NARRATIVE_DETAIL_POOL) if narrative_type != "Sparse-input" else ""
+    incident_desc = f"{random.choice(INCIDENT_DESCS)}." if narrative_type == "Incident note" else ""
 
-    outcomes = random.sample(
-        OUTCOME_TEMPLATES[stratum],
-        k=min(random.randint(1, 3), len(OUTCOME_TEMPLATES[stratum])),
+    time_val = f"{random.randint(7,17):02d}:{random.choice(['00', '30'])}"
+    am_pm = "AM" if int(time_val[:2]) < 12 else "PM"
+
+    narrative = template.format(
+        staff=staff, pid=pid, activity=svc_type.lower(),
+        duration=duration, service_type=svc_type,
+        narrative_detail=detail, incident_desc=incident_desc,
+        goal=goal.split(":")[-1].strip() if ":" in goal else goal,
     )
 
-    # Build the target CaseNote as a structured dict (the "model output" it should produce)
-    target_note = CaseNote(
-        participant_id=participant,
-        staff_presented_by=staff,
-        date_of_service=_random_date(),
-        duration_minutes=duration,
-        service_type=service_type,
-        goal_linkage=goal,
-        location=location,
-        participant_present=random.choice([True, True, True, False]),  # 75% present
-        narrative_summary=narrative_text,
-        billable_evidence=f"Provided {service_type.value.lower()} support. {outcomes[0].lower()}. "
-                         f"Documented for billing purposes in alignment with NDIS pricing arrangements.",
-        outcomes_achieved=outcomes,
-        risk_management=random.choice([None, f"Potential concern noted regarding {random.choice(['transport reliability', 'home safety', 'social isolation'])} — flagged to coordinator."]),
-        follow_up_needed=random.choice([True, False]),
-        follow_up_notes="Discussed with NDIS planner at last review. Follow-up as scheduled in Q{Q}.",
-    )
+    # Worker's rough input (the model will transform this)
+    worker_input = textwrap.dedent(f"""\
+    Worker: {staff}
+    Participant: {pid}
+    Date: {svc_date.isoformat()}
+    Duration: {duration} min
+    Service type: {svc_type}
+    Location: {location}
+    Present: {'Yes' if present else 'No'}
+    Goal: {goal}
+    Notes: {narrative}
+    Outcomes: Increased confidence, completed activity.
+    Follow-up: Yes - check next week""")
 
-    # The "worker input" is a rough, informal version (simulating dictation / bullet points)
-    worker_input = _build_worker_input(stratum, participant, staff, time_str, duration, service_type, narrative_template.format(time=time_str))
+    # Target structured note
+    outcomes = random.sample(OUTCOME_POOL, k=random.randint(1, 3))
+    outcomes = [o.format(goal=goal.split(":")[-1].strip() if ":" in goal else goal) for o in outcomes]
+
+    target: dict[str, Any] = {
+        "participant_id": pid,
+        "date_of_service": svc_date.isoformat(),
+        "duration_minutes": duration,
+        "service_type": svc_type,
+        "goal_linkage": goal,
+        "location": location,
+        "staff_presented_by": staff,
+        "participant_present": present,
+        "narrative_summary": narrative.strip(),
+        "billable_evidence": f"Direct support provided for {svc_type.lower()}. Participant engaged for full {duration} minutes. Evidence: {outcomes[0] if outcomes else 'Activity completed'}.",
+        "outcomes_achieved": outcomes,
+        "risk_management": (random.choice(INCIDENT_DESCS) + ".") if s.get("always_has_risk") else None,
+        "follow_up_needed": random.choice([True, False]),
+        "follow_up_notes": f"Reassess support needs during next {svc_type.lower()} session." if present else "Contact participant to reschedule.",
+    }
 
     return {
-        "id": f"{stratum}_{idx:04d}",
-        "stratum": stratum,
-        "input_text": worker_input,
-        "target_note": target_note.to_jsonl_record(),
+        "stratum": stratum_name,
+        "worker_input": worker_input.strip(),
+        "target_note": target,
     }
 
 
-def _build_worker_input(
-    stratum: str, participant: str, staff: str, time_str: str, duration: int, service_type: ServiceType, narrative_snippet: str
-) -> str:
-    """Construct a realistic support-worker input (rough notes / dictation)."""
-    inputs = {
-        "routine_session": f"• {staff} saw {participant} at {time_str}\n• Duration: {duration}min\n• Service type: {service_type.value}\n• Narrative: {narrative_snippet}\n• Outcomes: improved independence with shopping, stayed within budget",
-        "incident_note": f"⚠ INCIDENT — {staff} called in at {time_str} about {participant}. {duration}min session. Type: {service_type.value}. {narrative_snippet}",
-        "capacity_building": f"• Group activity with {participant}\n• {staff} facilitated\n• Duration: {duration}min\n• Activity: cooking workshop\n• {narrative_snippet}",
-        "sparse_input": "",  # sparse input IS the input
-        "edge_case": f"* UNUSUAL — {staff}: {participant} showed up unannounced at {time_str}. {narrative_snippet}",
-    }
-
-    if stratum == "sparse_input" and not narrative_snippet.startswith("•"):
-        # Use raw sparse template directly
-        pass  # already set by NARRATIVE_TEMPLATES["sparse_input"]
-    elif stratum != "sparse_input":
-        return inputs[stratum]
-
-    return narrative_snippet
-
-
-# ---------------------------------------------------------------------------
-# Stratified dataset builder
-# ---------------------------------------------------------------------------
-
-STRATUM_WEIGHTS = {
-    "routine_session": 0.35,     # majority class
-    "incident_note": 0.10,       # less common but critical
-    "capacity_building": 0.20,   # core service type
-    "sparse_input": 0.20,        # edge case — model must handle minimal input
-    "edge_case": 0.15,           # adversarial pressure
-}
-
-
-def generate_stratified_dataset(count_per_stratum: int = 20) -> list[dict[str, Any]]:
-    """Generate a stratified synthetic dataset."""
-    random.seed(42)  # reproducibility
+def generate_dataset(count: int = 20) -> list[dict[str, Any]]:
+    """Generate *count* synthetic records distributed by stratum weights."""
     records: list[dict[str, Any]] = []
-
-    for stratum, count in STRATUM_WEIGHTS.items():
-        for i in range(count_per_stratum):
-            record = generate_single_record(stratum, i)
-            records.append(record)
-
-    # Shuffle deterministically (but with different seed than generation)
-    random.seed(123)
-    random.shuffle(records)
+    for _ in range(count):
+        # Weighted selection
+        items = list(STRATA.items())
+        stratum_name = _pick_weighted([(k, v["weight"]) for k, v in items])
+        s = STRATA[stratum_name]
+        record = generate_single_note()
+        # Override the recorded stratum for metadata
+        record["stratum"] = stratum_name
+        records.append(record)
     return records
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate synthetic NDIS case note data")
-    parser.add_argument("--count", type=int, default=20, help="Records per stratum (default: 20)")
-    parser.add_argument("--output", type=str, default=str(PROJECT_ROOT / "data" / "splits" / "seed.jsonl"), help="Output JSONL file path")
+    parser.add_argument("--count", type=int, default=20, help="Number of records to generate")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output path (default: data/splits/seed.jsonl)",
+    )
     args = parser.parse_args()
 
-    print(f"Generating {args.count} records per stratum (5 strata total = {args.count * 5} records)...")
-    dataset = generate_stratified_dataset(count_per_stratum=args.count)
+    records = generate_dataset(args.count)
 
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out_dir = pathlib.Path("data/splits")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        for record in dataset:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    output_path = pathlib.Path(args.output) if args.output else out_dir / "seed.jsonl"
+    with open(output_path, "w") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-    # Write train/val/test split manifests
-    _write_split_manifests(dataset, output_path)
+    # Write stratified splits (train=70%, val=15%, test=15%)
+    split_dir = out_dir
+    for split_name, ratio in [("train", 0.70), ("val", 0.15), ("test", 0.15)]:
+        split_file = split_dir / f"{split_name}.jsonl"
+        # Group by stratum to maintain stratification
+        by_stratum: dict[str, list[dict]] = {}
+        for r in records:
+            by_stratum.setdefault(r["stratum"], []).append(r)
 
-    print(f"✓ Wrote {len(dataset)} records to {output_path}")
-    print("Split manifest:")
-    for split_name in ["train", "val", "test"]:
-        p = PROJECT_ROOT / "data" / "splits" / f"{split_name}.jsonl"
-        with open(p, encoding="utf-8") as fh:
-            cnt = sum(1 for _ in fh)
-        print(f"  {split_name}: {cnt} records → {p}")
+        with open(split_file, "w") as f:
+            for sname, srecords in sorted(by_stratum.items()):
+                import math
+                n_total = len(srecords)
+                split_size = round(n_total * ratio)
+                random.shuffle(srecords)
+                chosen = srecords[:split_size]
+                for r in chosen:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-
-def _write_split_manifests(dataset: list[dict[str, Any]], seed_path: Path) -> None:
-    """Split the dataset into train (70%) / val (15%) / test (15%)."""
-    random.seed(42)
-    indices = list(range(len(dataset)))
-    random.shuffle(indices)
-
-    n_train = int(len(dataset) * 0.70)
-    n_val = int(len(dataset) * 0.15)
-
-    split_indices = {
-        "train": indices[:n_train],
-        "val": indices[n_train:n_train + n_val],
-        "test": indices[n_train + n_val:],
-    }
-
-    # Ensure test set has no empty strata
-    test_strata = set()
-    for i in split_indices["test"]:
-        test_strata.add(dataset[i]["stratum"])
-    min_per_stratum = max(1, len(split_indices["test"]) // 5)
-    for stratum in STRATUM_WEIGHTS:
-        if dataset[i]["stratum"] == stratum and len([j for j in split_indices["test"] if dataset[j]["stratum"] == stratum]) < min_per_stratum:
-            # Promote from val or train
-            src = split_indices.get("val" if split_indices["val"] else "train")
-            for j in src:
-                if dataset[j]["stratum"] == stratum and dataset[j] not in [split_indices["test"][k] for k in range(len(split_indices["test"]))]:
-                    split_indices["test"].append(j)
-                    break
-
-    for split_name, indices_list in split_indices.items():
-        output_path = PROJECT_ROOT / "data" / "splits" / f"{split_name}.jsonl"
-        with open(output_path, "w", encoding="utf-8") as f:
-            for i in indices_list:
-                f.write(json.dumps(dataset[i], ensure_ascii=False) + "\n")
+    print(f"Generated {len(records)} synthetic records → {output_path}")
+    stratum_counts = {}
+    for r in records:
+        stratum_counts[r["stratum"]] = stratum_counts.get(r["stratum"], 0) + 1
+    print("Stratum distribution:")
+    for k, v in sorted(stratum_counts.items()):
+        print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":
