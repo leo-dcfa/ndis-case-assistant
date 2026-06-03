@@ -2,7 +2,7 @@
 name = "ndis-case-note-assistant"
 version = "0.1.0"
 description = "Fine-tuned small model for structured NDIS case note generation"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = { text = "MIT" }
 dependencies = [
     "bitsandbytes>=0.49.2",
@@ -19,9 +19,9 @@ dependencies = [
     "pydantic-evals>=1.105.0",
     "pydantic-settings>=2.14.1",
     "pytest>=9.0.3",
-    "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
+    "typer>=0.12.0",
     "ruff>=0.15.15",
     "scikit-learn>=1.9.0",
     "torch>=2.12.0",
@@ -35,8 +35,18 @@ dependencies = [
 dev = []
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 99
 
 [tool.pyright]
-pythonVersion = "3.12"
+pythonVersion = "3.14"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ndis", "src"]
+
+[project.scripts]
+dev-init = "cli:main"

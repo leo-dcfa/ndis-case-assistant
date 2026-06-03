@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+venv/
+ENV/
+
+# uv
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# ML / Training artifacts
+runs/
+models/
+checkpoints/
+wandb/
+weights/
+*.pt
+*.ckpt
+*.safetensors
+
+# Notebooks (if any)
+notebooks/
+*.ipynb
+
+# Logs
+logs/
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Config with secrets
+config/secrets.yaml
+config/api_keys.yaml
+
+# Data files that may be large or sensitive
+data/raw/
+data/processed/
+
+# MyPy cache
+.mypy_cache/
+
+# Ruff cache
+.ruff_cache/
+
+# pytest cache
+.pytest_cache/
+__pycache__

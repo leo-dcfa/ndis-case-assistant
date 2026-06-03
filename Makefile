@@ -21,11 +21,11 @@ dev-init: ## Install dependencies with uv
 # Phase 0: Synthetic data generation (make synth)
 # ---------------------------------------------------------------------------
 
-synth: ## Generate stratified synthetic dataset (default 20 per stratum = 100 total)
-	cd $(CURDIR) && python -m data.synth_generate --count 20
+synth: ## Generate stratified synthetic dataset (default 20 records)
+	cd $(CURDIR) && python -m ndis.synth_generate --count 20
 
 synth-large: ## Generate larger synthetic dataset (500 per stratum = 2500 total)
-	cd $(CURDIR) && python -m data.synth_generate --count 500
+	cd $(CURDIR) && python -m ndis.synth_generate --count 500
 
 # ---------------------------------------------------------------------------
 # Phase 1: Evaluation harness (Pydantic Evals)
@@ -71,5 +71,5 @@ clean: ## Remove generated files (keep source)
 
 check: ## Run linting and type checking
 	@echo "Running ruff linter..."
-	uv run ruff check data/ eval/ train/ serve/
+	uv run ruff check src/ndis/ src/eval/ src/train/ src/serve/
 	@echo "Done."
