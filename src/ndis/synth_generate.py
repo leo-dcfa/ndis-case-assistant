@@ -438,7 +438,7 @@ def generate_dataset(
                 records.append(rec)
                 made += 1
             except (ValueError, RuntimeError) as exc:
-                print(f"  ✗ retry ({stratum}): {exc})")
+                print(f"  ✗ retry ({stratum}): {exc}")
                 time.sleep(0.5)
 
     return records
