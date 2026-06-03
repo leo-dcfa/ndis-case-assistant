@@ -1,12 +1,10 @@
+"""Synthetic NDIS case-note data generator (library)."""
+
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
-import pathlib
 import random
-import sys
-import textwrap
 import time
 from datetime import date, timedelta
 from typing import Any, cast
@@ -444,127 +442,3 @@ def generate_dataset(
                 time.sleep(0.5)
 
     return records
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="LLM-powered synthetic NDIS case-note generator (Ollama)",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=textwrap.dedent("""\
-            Examples:
-              uv run python -m src.synth_generate_ollama --count 100
-              uv run python -m src.synth_generate_ollama --model qwen3:4b
-              uv run python -m src.synth_generate_ollama \\
-                  --per-stratum routine_session=50 incident=20
-
-            Available models (pull first with ``ollama pull <name>``):
-              qwen3:8b      — best balance (~5GB VRAM)
-              qwen3:4b      — lighter (~3GB VRAM, fine on most Macs)
-              qwen3:1.7b    — fastest, lowest quality
-
-            If your Ollama runs on a non-default port:
-              export OLLAMA_BASE_URL=http://localhost:<PORT>/v1
-        """),
-    )
-    parser.add_argument(
-        "--count",
-        type=int,
-        default=None,
-        help=("Total records (all strata equally distributed). Overrides per-stratum plan."),
-    )
-    parser.add_argument(
-        "--model",
-        default=DEFAULT_MODEL,
-        help="Ollama model name (default: qwen3:8b)",
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        help="Output JSONL path (default: data/splits/seed_ollama.jsonl)",
-    )
-    parser.add_argument(
-        "--per-stratum",
-        nargs="+",
-        action="append",
-        help=(
-            "Stratum counts as KEY=VALUE pairs. e.g. --per-stratum routine_session=50 incident=20"
-        ),
-    )
-
-    args, _ = parser.parse_known_args()
-    OLLAMA_MODEL = args.model or DEFAULT_MODEL
-
-    print(f"Testing connection to {OLLAMA_BASE_URL} ...")
-    try:
-        models_resp = client.models.list()
-        available = [m.id for m in models_resp.data]
-        print(f"  Available models ({len(available)}): {', '.join(available[:10])}")
-        if len(available) > 10:
-            print(f"  ... and {len(available) - 10} more")
-        if OLLAMA_MODEL not in available:
-            print(
-                f"  ⚠ '{OLLAMA_MODEL}' not found on server — "
-                "you may get errors. Run ``ollama pull {OLLAMA_MODEL}``."
-            )
-    except Exception as exc:
-        print(f"  ✗ Connection failed: {exc}")
-        print("  Make sure Ollama is running (try ``ollama list``")
-        sys.exit(1)
-
-    ps_counts: dict[str, int] = {}
-    for pair in args.per_stratum or []:
-        for p in pair:
-            k, v = p.split("=")
-            ps_counts[k.strip()] = int(v.strip())
-
-    if ps_counts:
-        plan = dict(ps_counts)
-    elif args.count:
-        n_per = max(1, round(args.count / len(STRATUM_PLAN)))
-        plan = {s: n_per for s in STRATUM_PLAN}
-    else:
-        plan = dict(STRATUM_PLAN)
-
-    print(f"\nPlan: {plan}")
-    total = sum(plan.values())
-    print(f"Estimated records: {total}\n")
-    print("(Progress will appear as each record is generated...)\n")
-
-    records = generate_dataset(plan)
-
-    out_dir = pathlib.Path("data/splits")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = pathlib.Path(args.output) if args.output else out_dir / "seed_ollama.jsonl"
-    with open(out_path, "w", encoding="utf-8") as f:
-        for rec in records:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-
-    by_stratum: dict[str, list[dict]] = {}
-    for r in records:
-        by_stratum.setdefault(r["stratum"], []).append(r)
-
-    for split_name, ratio in [("train", 0.70), ("val", 0.15), ("test", 0.15)]:
-        split_file = out_dir / f"seed_ollama_{split_name}.jsonl"
-        with open(split_file, "w", encoding="utf-8") as f:
-            for sname, srecords in sorted(by_stratum.items()):
-                n_total = len(srecords)
-                split_size = round(n_total * ratio)
-                random.shuffle(srecords)
-                chosen = srecords[:split_size]
-                for r in chosen:
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
-
-    print(f"\n✅ Wrote {len(records)} records to {out_path}")
-    print("  Stratified splits → seed_ollama_{train,val,test}.jsonl")
-    for k, v in sorted(by_stratum.items()):
-        print(f"  {k:24s} {v:4d}")
-
-    print(f"\nModel used: {OLLAMA_MODEL}")
-    print("Next steps:")
-    print("  1. Validate targets against data/schema.py (CaseNote model)")
-    print("  2. Run the fake-identifier check before training")
-
-
-if __name__ == "__main__":
-    main()
