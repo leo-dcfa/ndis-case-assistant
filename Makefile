@@ -21,14 +21,18 @@ dev-init: ## Install dependencies with uv
 # Phase 0: Synthetic data generation (make synth)
 # ---------------------------------------------------------------------------
 
-synth: ## Generate teacher data with the local LLM faithfulness filter (drops embellished pairs)
-	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20 --filter --filter-judge llm
-
-synth-offline: ## Generate dataset with the deterministic no-LLM generator (no Ollama needed)
+synth-offline: ## Fastest: deterministic no-LLM generator (no Ollama needed)
 	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 60 --offline
 
-synth-large: ## Generate a larger dataset via the teacher (~340 records)
-	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 340
+synth-fast: ## Quick teacher run: 8B teacher + heuristic filter (~5s/record, catches number/ID fab)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20 \
+		--teacher-model qwen3:8b --filter --filter-judge heuristic
+
+synth: ## Quality teacher run: 27B teacher + LLM faithfulness filter (SLOW ~1 min/record)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20 --filter --filter-judge llm
+
+synth-large: ## Large quality dataset (27B teacher + LLM filter) — run as an overnight batch
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 1000 --filter --filter-judge llm
 
 # ---------------------------------------------------------------------------
 # Phase 1: Evaluation harness

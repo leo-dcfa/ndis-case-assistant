@@ -258,8 +258,9 @@ def _build_stratum_seed(stratum: str, service_type: str) -> str:
     return f"{seeds[stratum]} ({random.choice(seed_variations)})"
 
 
-def generate_one(stratum: str) -> dict[str, Any]:
-    """Ask the LLM to produce one input → target pair."""
+def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
+    """Ask the local LLM teacher to produce one input → target pair."""
+    model = model or OLLAMA_MODEL
 
     service_type = random.choice(SERVICE_TYPES)
     style_key = random.choice(list(INPUT_STYLES.keys()))
@@ -360,14 +361,15 @@ def generate_one(stratum: str) -> dict[str, Any]:
 
     try:
         resp = client.chat.completions.create(
-            model=OLLAMA_MODEL,
+            model=model,
             messages=messages,
             temperature=0.85,
-            max_tokens=2400,
+            # Qwen3 is a thinking model. Disabling thinking (think=False) yields
+            # unparseable/empty output here, so we leave it ON and give a budget
+            # large enough for the reasoning AND the JSON; coerce_draft() strips the
+            # <think> block before parsing. (Measured: 27B ~20s/call, 8B ~5s.)
+            max_tokens=6000,
             top_p=0.9,
-            # Ollama: Qwen3 teacher is a thinking model — without this it spends the
-            # whole token budget on hidden reasoning and returns empty content.
-            extra_body={"think": False},
         )
         raw = resp.choices[0].message.content or ""
     except Exception as exc:
@@ -579,6 +581,7 @@ def generate_dataset(
     offline: bool = False,
     seed: int = 42,
     faithfulness_filter: "Callable[[str, dict], bool] | None" = None,
+    teacher_model: str | None = None,
 ) -> list[dict]:
     """Generate records across all strata.
 
@@ -595,28 +598,45 @@ def generate_dataset(
     dropped = 0
     rng = random.Random(seed)
 
+    # Hard safety caps so a flaky teacher or an over-zealous filter can NEVER loop
+    # forever (the failure mode that hung a run for 90 min). Whichever trips first
+    # ends the stratum; a shortfall is reported, not silently hidden.
+    max_consecutive_fail = 60 if offline else 25
+
     for stratum, target in plan.items():
         made = 0
         attempts = 0
+        consecutive_fail = 0
+        max_attempts = target * (50 if offline else 20) + 30
         while made < target:
             attempts += 1
-            if offline and attempts > target * 50:
-                break  # exhausted unique deterministic variants for this stratum
+            if attempts > max_attempts or consecutive_fail >= max_consecutive_fail:
+                print(
+                    f"  ⚠ {stratum}: stopped at {made}/{target} after {attempts - 1} attempts "
+                    f"({consecutive_fail} consecutive failures) — cap hit"
+                )
+                break
             try:
-                obj = generate_one_offline(stratum, rng) if offline else generate_one(stratum)
+                obj = (
+                    generate_one_offline(stratum, rng)
+                    if offline
+                    else generate_one(stratum, model=teacher_model)
+                )
                 if not obj.get("input") or not obj.get("target"):
-                    print(f"  ⚠ empty output (retry {made + 1}/{target})")
+                    consecutive_fail += 1
                     continue
 
                 if faithfulness_filter is not None and not faithfulness_filter(
                     obj["input"], obj["target"]
                 ):
                     dropped += 1
+                    consecutive_fail += 1
                     print(f"  ✗ dropped unfaithful pair ({stratum}); {dropped} dropped so far")
                     continue
 
                 key = _dedup_key(obj["input"])
                 if key in _seen_hashes:
+                    consecutive_fail += 1
                     continue
                 _seen_hashes.add(key)
 
@@ -626,7 +646,9 @@ def generate_dataset(
                     "input": obj["input"],
                     "target": obj["target"],
                     "meta": {
-                        "model": "offline-template" if offline else OLLAMA_MODEL,
+                        "model": "offline-template"
+                        if offline
+                        else (teacher_model or OLLAMA_MODEL),
                         "teacher_license": "n/a" if offline else "open-weight (Apache-2.0)",
                         "generated_at": date.today().isoformat(),
                     },
@@ -639,7 +661,9 @@ def generate_dataset(
 
                 records.append(rec)
                 made += 1
+                consecutive_fail = 0
             except (ValueError, RuntimeError) as exc:
+                consecutive_fail += 1
                 print(f"  ✗ retry ({stratum}): {exc}")
                 if not offline:
                     time.sleep(0.5)
@@ -676,6 +700,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--teacher-model",
+        default=OLLAMA_MODEL,
+        help=f"Local Ollama teacher model (default {OLLAMA_MODEL}; use qwen3:8b for ~4x speed).",
+    )
+    parser.add_argument(
         "--filter",
         action="store_true",
         help="Drop pairs a LOCAL faithfulness judge rejects (recommended for teacher runs).",
@@ -707,10 +736,14 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"Faithfulness filter ON (local judge: {judge.name}).")
 
-    mode = "offline template" if args.offline else f"LLM teacher ({OLLAMA_MODEL})"
+    mode = "offline template" if args.offline else f"LLM teacher ({args.teacher_model})"
     print(f"Generating ~{sum(plan.values())} records via {mode} ...")
     records = generate_dataset(
-        plan, offline=args.offline, seed=args.seed, faithfulness_filter=faith_filter
+        plan,
+        offline=args.offline,
+        seed=args.seed,
+        faithfulness_filter=faith_filter,
+        teacher_model=args.teacher_model,
     )
 
     out_dir = pathlib.Path(args.out_dir)
