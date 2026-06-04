@@ -126,6 +126,16 @@ def build_scorecard(
     extra: dict[str, Any] = {}
     if generated_at:
         extra["generated_at"] = generated_at
+    latencies = sorted(s.latency_s for s in scores)
+    if latencies and any(latencies):
+        n = len(latencies)
+        extra["latency_s"] = {
+            "n": n,
+            "mean": round(sum(latencies) / n, 3),
+            "p50": round(latencies[int(0.50 * (n - 1))], 3),
+            "p95": round(latencies[int(0.95 * (n - 1))], 3),
+            "max": round(latencies[-1], 3),
+        }
 
     return Scorecard(
         model_name=model_name,
@@ -211,6 +221,13 @@ def render_console(card: Scorecard) -> None:
             result,
         )
     console.print(suite_table)
+
+    lat = card.extra.get("latency_s")
+    if lat:
+        console.print(
+            f"\nDraft latency (s): mean={lat['mean']}  p50={lat['p50']}  "
+            f"p95={lat['p95']}  max={lat['max']}  (n={lat['n']})"
+        )
 
     verdict = "[bold green]RELEASE-OK[/]" if card.release_ok else "[bold red]BLOCKED[/]"
     console.print(f"\nRelease decision (hard gates): {verdict}")

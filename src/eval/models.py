@@ -87,6 +87,7 @@ class ExampleScore:
     faithfulness: FaithfulnessCheck
     register: RegisterCheck
     billable: BillableEvidenceCheck
+    latency_s: float = 0.0  # wall-clock to draft this note (model-under-test only)
 
     @property
     def passed(self) -> bool:
@@ -106,6 +107,7 @@ class ExampleScore:
             "faithfulness": self.faithfulness.model_dump(),
             "register": self.register.model_dump(),
             "billable": self.billable.model_dump(),
+            "latency_s": round(self.latency_s, 3),
             "passed": self.passed,
         }
 

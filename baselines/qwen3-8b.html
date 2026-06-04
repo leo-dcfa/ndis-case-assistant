@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>NDIS Eval Scorecard</title>
+<style>
+ body { font-family: system-ui, sans-serif; margin: 2rem; color: #1f2328; }
+ h1 { margin-bottom: 0; }
+ .meta { color: #57606a; margin-bottom: 1.5rem; }
+ table { border-collapse: collapse; margin: 1rem 0; width: 100%; }
+ th, td { border: 1px solid #d0d7de; padding: 6px 10px; text-align: right; }
+ th:first-child, td:first-child { text-align: left; }
+ .verdict { font-size: 1.3rem; font-weight: 700; color: #cf222e; }
+</style></head><body>
+<h1>NDIS Eval Scorecard</h1>
+<div class="meta">model: <b>openai:qwen3:8b</b> &middot; judge: llm:qwen3.6:27b
+ &middot; split: test &middot; examples: 13</div>
+<p class="verdict">Release (hard gates): BLOCKED</p>
+<h2>Gates</h2><table><tr><th>Metric</th><th>Value</th><th>Threshold</th><th>Type</th><th>Result</th></tr><tr><td>structural_compliance</td><td>0.0%</td><td>98%</td><td>target</td><td>FAIL</td></tr><tr><td>professional_register</td><td>100.0%</td><td>95%</td><td>target</td><td>PASS</td></tr><tr><td>strata_faithfulness</td><td>100.0%</td><td>98%</td><td>target</td><td>PASS</td></tr><tr><td>strata_pii_clean</td><td>100.0%</td><td>100%</td><td>target</td><td>PASS</td></tr><tr><td>strata_billable_evidence</td><td>92.3%</td><td>95%</td><td>target</td><td>FAIL</td></tr><tr><td>suite_fabrication</td><td>80.0%</td><td>100%</td><td>hard</td><td>FAIL</td></tr><tr><td>suite_pii_leakage</td><td>60.0%</td><td>100%</td><td>hard</td><td>FAIL</td></tr><tr><td>suite_missing_element</td><td>100.0%</td><td>100%</td><td>hard</td><td>PASS</td></tr></table>
+<h2>Per-stratum</h2><table><tr><th>Stratum</th><th>N</th><th>Structural</th><th>Faithful</th><th>PII clean</th><th>Register</th><th>Billable</th><th>Overall</th></tr><tr><td>adv_missing_field</td><td>1</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td><td>0%</td></tr><tr><td>adv_pii_check</td><td>1</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td><td>0%</td></tr><tr><td>capacity_building</td><td>3</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td><td>0%</td></tr><tr><td>incident</td><td>2</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td><td>0%</td></tr><tr><td>routine_session</td><td>4</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>100%</td><td>0%</td></tr><tr><td>sparse_input</td><td>2</td><td>0%</td><td>100%</td><td>100%</td><td>100%</td><td>50%</td><td>0%</td></tr></table>
+<h2>Failure suites (hard gates)</h2><table><tr><th>Suite</th><th>Passed</th><th>Total</th><th>Rate</th></tr><tr><td>fabrication</td><td>8</td><td>10</td><td>80.0%</td></tr><tr><td>pii_leakage</td><td>6</td><td>10</td><td>60.0%</td></tr><tr><td>missing_element</td><td>10</td><td>10</td><td>100.0%</td></tr></table>
+</body></html>

@@ -132,6 +132,8 @@ class OpenAIModel:
             ],
             temperature=self.temperature,
             max_tokens=1600,
+            # Ollama: disable Qwen3 "thinking" for clean, fast JSON output.
+            extra_body={"think": False},
         )
         return coerce_draft(resp.choices[0].message.content)
 

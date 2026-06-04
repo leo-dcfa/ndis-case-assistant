@@ -51,6 +51,14 @@ test: ## Run the pytest suite
 	cd $(CURDIR) && uv run pytest -q
 
 # ---------------------------------------------------------------------------
+# Phase 2: Baseline — prompted Qwen3-8B (no fine-tune), committed scorecard
+# ---------------------------------------------------------------------------
+
+baseline: ## Measure prompted Qwen3-8B on the test split (needs Ollama; writes baselines/)
+	cd $(CURDIR) && uv run python -m eval.eval_suite --mode openai --judge heuristic \
+		--split test --out baselines/qwen3-8b.json --html baselines/qwen3-8b.html
+
+# ---------------------------------------------------------------------------
 # Training (Phase 3+) — placeholder until fine-tuning is needed
 # ---------------------------------------------------------------------------
 

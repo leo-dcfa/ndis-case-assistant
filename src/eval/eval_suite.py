@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+import time
 from datetime import datetime
 from typing import Any
 
@@ -32,7 +33,9 @@ from ndis.splits import SPLIT_FILES
 def score_example(example: dict[str, Any], model: ModelUnderTest, judge: Judge) -> ExampleScore:
     input_text = example["input"]
     stratum = example.get("stratum", "unknown")
+    t0 = time.perf_counter()
     draft = model.draft_note(input_text, stratum=stratum)
+    latency_s = time.perf_counter() - t0
 
     structure = score_structure(draft, stratum=stratum)
     pii = score_pii(draft, forbidden=example.get("forbidden_pii"))
@@ -48,6 +51,7 @@ def score_example(example: dict[str, Any], model: ModelUnderTest, judge: Judge) 
         faithfulness=faithfulness,
         register=register,
         billable=billable,
+        latency_s=latency_s,
     )
 
 

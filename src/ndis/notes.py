@@ -70,13 +70,16 @@ def coerce_draft(raw: Any) -> dict[str, Any]:
     failure rather than crashing.
     """
     import json
+    import re
 
     if isinstance(raw, dict):
         return raw
     if not isinstance(raw, str):
         return {}
 
-    cleaned = raw.strip()
+    # Strip any chain-of-thought block a reasoning model emitted inline, so its
+    # braces don't confuse the first-{ / last-} extraction below.
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
         cleaned = "\n".join(line for line in lines[1:] if not line.strip().startswith("```"))

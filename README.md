@@ -17,8 +17,8 @@ eval-driven harness that scores a dummy model end-to-end. No fine-tuning yet.
 |-------|-------------|--------|
 | 0 — Scaffold | Repo, schema, config, synthetic generator (LLM + offline), frozen splits | ✅ Done |
 | 1 — Evaluation harness | Automated + judged scorers, strata, 3 failure suites, judge calibration, scorecard | ✅ Done |
-| 2 — Baseline | Prompted Qwen3-8B measurement (`--mode openai`) | ⏳ Next |
-| 3 — Fine-tune v1 | QLoRA fine-tune on training set | ⏳ |
+| 2 — Baseline | Prompted Qwen3-8B measured + 27B judge calibrated → [`baselines/qwen3-8b.md`](baselines/qwen3-8b.md) (**BLOCKED**: sets the bar) | ✅ Done |
+| 3 — Fine-tune v1 | QLoRA fine-tune on training set | ⏳ Next |
 | 4 — Shrink protocol | Retrain at 4B, then 1.5B | ⏳ |
 | 5 — Serving + cascade | vLLM endpoint with fallback | ⏳ |
 | 6 — Integration surface | FastAPI `POST /draft-note` | ⏳ |
@@ -147,6 +147,24 @@ ndis-case-assistant/
    a structural failure elsewhere.
 
 ---
+
+## How much test data?
+
+Test-set sizing is about confidence in a pass-rate, not training volume — two regimes:
+
+- **Stratified quality set** (structural ≥98%, register ≥95%): margin of error ≈ 1/√n.
+  ~150–300 total (PRD §6.2) gives ±~10% per stratum — fine for iteration. A few hundred
+  *per stratum* (low thousands total) to publish tight numbers.
+- **Hard-gate failure suites** (faithfulness/PII = 100%): with 0 failures, the true rate
+  could still be ≈ 3/n (rule of three). 20 cases → ≤~15%; 100 → ≤~3%; 300 → ≤~1%;
+  3,000 → ≤~0.1%. This is where volume buys assurance — but **diversity beats count**
+  (50 distinct fabrication temptations >> 1,000 near-duplicates).
+
+Two caveats: synthetic data measures fit to the *generator's* distribution (a few hundred
+synthetic + real de-identified notes beats thousands of synthetic); and every LLM-judged
+example costs ~10–15s on the 27B, so use the heuristic judge for big sweeps and the LLM
+judge on a calibrated subsample. The committed baseline uses n=13 (illustrative) — grow it
+before trusting the per-stratum numbers.
 
 ## Real data (later, human-gated)
 

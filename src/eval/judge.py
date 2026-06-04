@@ -128,9 +128,11 @@ class HeuristicJudge:
 # --------------------------------------------------------------------------- #
 
 _JUDGE_SYSTEM = (
-    "You are a strict, local evaluation judge for NDIS case notes. You return ONLY "
-    "JSON matching the requested schema — no markdown, no commentary. Be conservative: "
-    "if uncertain about fabrication or PII, fail the note."
+    "You are a fair, accurate evaluation judge for NDIS case notes. You return ONLY "
+    "JSON matching the requested schema — no markdown, no commentary, no extra keys. "
+    "Judge only the dimension asked. Reorganising or summarising the worker's own input "
+    "in professional prose is CORRECT, not a fabrication; only NEW facts absent from the "
+    "input count against faithfulness."
 )
 
 
@@ -157,15 +159,23 @@ class LLMJudge:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.0,
-            max_tokens=600,
+            # Keep Qwen3 "thinking" ON — disabling it collapses judgement to a
+            # blanket "false". Budget must cover the reasoning AND the JSON answer;
+            # coerce_draft() strips the <think> block before parsing.
+            max_tokens=2500,
         )
         return coerce_draft(resp.choices[0].message.content)
 
     def judge_faithfulness(self, input_text: str, note: dict[str, Any]) -> FaithfulnessCheck:
+        import json
+
         prompt = (
-            "Decide whether EVERY fact in the NOTE is supported by the WORKER INPUT. "
-            "Any invented fact (number, date, name, event) is a fabrication.\n\n"
-            f"WORKER INPUT:\n{input_text}\n\nNOTE:\n{note}\n\n"
+            "Is the NOTE faithful to the WORKER INPUT? It is faithful if every concrete "
+            "fact in it (numbers, dates, names, events) traces back to the input. "
+            "Rewording, structuring, and summarising the input is fine. A field marked "
+            '"[not recorded]" is fine (a flagged gap, not a fabrication). Set is_faithful '
+            "false ONLY if the note states a specific fact that is NOT in the input.\n\n"
+            f"WORKER INPUT:\n{input_text}\n\nNOTE (JSON):\n{json.dumps(note)}\n\n"
             'Return JSON: {"is_faithful": bool, "fabricated_claims": [str], "reasoning": str}'
         )
         try:
@@ -176,10 +186,14 @@ class LLMJudge:
             )
 
     def judge_register(self, note: dict[str, Any]) -> RegisterCheck:
+        narrative = str(note.get("narrative_summary", ""))
         prompt = (
-            "Rate the professional register of this NDIS case note narrative "
-            "(objective, third-person, past tense, no fillers).\n\n"
-            f"NOTE:\n{note}\n\n"
+            "Judge ONLY the professional register of this case-note narrative. It MEETS "
+            "register if it is objective third-person prose without first-person voice "
+            '("I", "we") or dictation fillers ("um", "yeah", "so"). Proper, complete '
+            "sentences meet register even if brief. Set meets_register true unless the "
+            "writing is clearly informal/unprofessional.\n\n"
+            f"NARRATIVE:\n{narrative}\n\n"
             'Return JSON: {"meets_register": bool, "score": 0..1, "issues": [str], "reasoning": str}'
         )
         try:
