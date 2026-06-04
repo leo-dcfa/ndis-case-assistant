@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 import random
 import time
 from collections.abc import Callable
@@ -35,9 +36,17 @@ SYSTEM_PROMPT = (
     "- Never output a 9-digit number that resembles a real NDIS participant number.\n"
     "- FAITHFULNESS: every fact in the target note must be derived EXACTLY from "
     "the worker input. Restructure and organise — never invent new facts.\n"
-    '- Where the input lacks a required element, mark it "[not recorded]" rather '
-    "than inventing it.\n"
-    "- Output STRICT JSON only. No markdown fences, no commentary, no explanation."
+    "\nJSON TYPES (exact — wrong types are rejected):\n"
+    "- participant_present and follow_up_needed are JSON booleans: true / false "
+    '(never the strings "yes"/"no").\n'
+    "- duration_minutes is a JSON integer (e.g. 60), or -1 if genuinely not recorded.\n"
+    '- outcomes_achieved is a JSON array of strings (e.g. ["..."]), never a single string.\n'
+    "- Include ALL required keys, every time.\n"
+    "\nGAP DISCIPLINE:\n"
+    '- Use "[not recorded]" (or -1 for duration) ONLY for an element the worker input '
+    "genuinely does not contain. If the input contains it, you MUST fill it — do not "
+    'lazily write "[not recorded]".\n'
+    "\n- Output STRICT JSON only. No markdown fences, no commentary, no explanation."
 )
 
 STRATUM_PROMPTS = {
@@ -259,96 +268,76 @@ def _build_stratum_seed(stratum: str, service_type: str) -> str:
 
 
 def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
-    """Ask the local LLM teacher to produce one input → target pair."""
+    """Ask the local LLM teacher to produce ONE input → target pair.
+
+    Design: the worker INPUT is template-rendered from a controlled set of sampled
+    facts (faithful by construction), and the teacher's only job is to write the
+    polished TARGET note from that input. This stops the teacher inventing numbers
+    the input never contained (the main source of dropped pairs) while still giving
+    LLM-quality, varied target prose.
+    """
+    from ndis.notes import coerce_draft
+
     model = model or OLLAMA_MODEL
-
-    service_type = random.choice(SERVICE_TYPES)
+    facts = _sample_facts(stratum, random)
     style_key = random.choice(list(INPUT_STYLES.keys()))
-    quality = "sparse" if stratum == "sparse_input" else "normal"
-    has_risk = stratum == "incident"
+    input_text, extra = _render_input_offline(facts, style_key, stratum)
+    seed_hint = _build_stratum_seed(stratum, facts["service_type"])
 
-    worker_text, missing_fields = _format_worker_input(
-        style=style_key,
-        service_type=service_type,
-        goal="",
-        has_risk=has_risk,
-        quality=quality,
-    )
-
-    seed_hint = _build_stratum_seed(stratum, service_type)
+    target_schema = {
+        "participant_id": "...",
+        "date_of_service": "YYYY-MM-DD",
+        "duration_minutes": 0,
+        "service_type": facts["service_type"],
+        "goal_linkage": "...",
+        "location": "...",
+        "staff_presented_by": "...",
+        "participant_present": True,
+        "narrative_summary": "...",
+        "billable_evidence": "...",
+        "outcomes_achieved": ["..."],
+        "risk_management": "[not recorded]",
+        "follow_up_needed": False,
+        "follow_up_notes": "[not recorded]",
+    }
 
     prompt = (
-        "Generate ONE synthetic NDIS case-note example.\n\n"
-        f"STRATUM: {stratum}\n"
-        f"SERVICE TYPE: {service_type}\n"
-        f"WORKER INPUT STYLE: {style_key}\n"
-        f"{INPUT_STYLES[style_key]}\n\n"
-        "Scenario seed (creative direction, do NOT quote): "
-        f"{seed_hint}\n"
-        f"Described context: {STRATUM_PROMPTS[stratum]}\n\n"
-        "--- WORKER INPUT ---\n"
-        f"{worker_text}\n"
-        "---------------------\n\n"
-        "REQUIRED target fields (must appear exactly as keys):\n"
-        "  participant_id        — fake code only\n"
-        "  date_of_service       — YYYY-MM-DD format\n"
-        "  duration_minutes      — integer, or -1 if not recorded\n"
-        "  service_type          — one of the NDIS categories\n"
-        "  goal_linkage          — link to a specific participant goal\n"
-        "  location              — where the service was delivered\n"
-        "  staff_presented_by    — fake worker code/name\n"
-        "  participant_present   — true / false (or null if unknown)\n"
-        "  narrative_summary     — structured third-person narrative\n"
-        "  billable_evidence     — what supports the billing claim\n"
-        "  outcomes_achieved     — array of strings\n"
-        '  risk_management       — string or "[not recorded]"\n'
-        "  follow_up_needed      — true / false\n"
-        '  follow_up_notes       — string or "[not recorded]"\n\n'
+        "You are given a support worker's RAW INPUT. Produce ONLY the structured NDIS "
+        "case note (the target) as JSON, derived STRICTLY from that input.\n\n"
+        f"Context: {STRATUM_PROMPTS[stratum]}\n"
+        f"Tone angle (do NOT add facts): {seed_hint}\n\n"
+        "--- RAW WORKER INPUT (the ONLY source of truth) ---\n"
+        f"{input_text}\n"
+        "---------------------------------------------------\n\n"
+        "Rules:\n"
+        "- Use ONLY facts present in the raw input. Do NOT introduce any number, date, "
+        "name, duration, location, or detail that is not in the input.\n"
+        "- Reword into calm, objective, third-person, past-tense professional prose.\n"
+        f"- service_type must be EXACTLY: {facts['service_type']}\n"
     )
 
-    if stratum == "adv_pii_check":
+    if stratum in ("sparse_input", "adv_missing_field"):
         prompt += (
-            "ADVERSARIAL: The worker input contains a stray phone number and another "
-            "person's name. Redact or anonymise these in the target note per privacy "
-            'policy. Return extra key "pii_handling" describing what was redacted.\n\n'
+            "- GAP scenario: the input genuinely omits some required element(s). Flag ONLY "
+            'those as "[not recorded]" (or -1 for duration); fill every other field from '
+            "the input.\n"
         )
-    elif stratum == "adv_missing_field":
+    else:
         prompt += (
-            "ADVERSARIAL: The worker input is GENUINELY missing one required field "
-            "(e.g. no duration recorded). The target must explicitly flag the gap "
-            "rather than inventing or silently omitting it. Return extra key "
-            '"missing_fields" with the gap list.\n\n'
+            "- The input contains every required element. Fill EVERY field with a real value "
+            'from the input — do NOT use "[not recorded]" or -1 anywhere.\n'
         )
 
-    schema_dict: dict[str, Any] = {
-        "input": "(the worker's raw notes)",
-        "target": {
-            "participant_id": "...",
-            "date_of_service": "...",
-            "duration_minutes": 0,
-            "service_type": "...",
-            "goal_linkage": "...",
-            "location": "...",
-            "staff_presented_by": "...",
-            "participant_present": True,
-            "narrative_summary": "...",
-            "billable_evidence": "...",
-            "outcomes_achieved": ["..."],
-            "risk_management": "[not recorded]",
-            "follow_up_needed": False,
-            "follow_up_notes": "[not recorded]",
-        },
-    }
     if stratum == "adv_pii_check":
-        schema_dict["pii_handling"] = "(description of redacted items)"
-    if stratum == "adv_missing_field":
-        schema_dict["missing_fields"] = ["(field name)"]
+        prompt += (
+            "- The input contains third-party personal details (a name and/or phone/email). "
+            "These MUST NOT appear in the note — redact/anonymise them.\n"
+        )
 
     prompt += (
-        f"Return STRICT JSON matching this schema:\n"
-        f"{json.dumps(schema_dict, indent=2)}\n\n"
-        "IMPORTANT: Do NOT include markdown fences, backticks, or any text outside "
-        "the JSON object."
+        "\nReturn STRICT JSON for the target note with exactly these keys "
+        "(no wrapping object, no markdown):\n"
+        f"{json.dumps(target_schema, indent=2)}"
     )
 
     messages: list[ChatCompletionMessageParam] = cast(
@@ -363,7 +352,7 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
         resp = client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=0.85,
+            temperature=0.7,
             # Qwen3 is a thinking model. Disabling thinking (think=False) yields
             # unparseable/empty output here, so we leave it ON and give a budget
             # large enough for the reasoning AND the JSON; coerce_draft() strips the
@@ -375,13 +364,19 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
     except Exception as exc:
         raise RuntimeError(f"LLM call failed: {exc}") from exc
 
-    # coerce_draft strips any <think> block and markdown fences, then extracts the
-    # JSON object. Empty/garbage -> {} -> ValueError so generate_dataset retries.
-    from ndis.notes import coerce_draft
-
-    obj = coerce_draft(raw)
-    if not obj:
+    target = coerce_draft(raw)
+    if not target:
         raise ValueError(f"No JSON object found in response. First 200 chars:\n{raw[:200]!r}")
+
+    obj: dict[str, Any] = {"input": input_text, "target": target}
+    if stratum == "adv_pii_check":
+        inj = extra.get("pii_injected", {})
+        obj["pii_handling"] = (
+            f"Redacted third-party details ({inj.get('name')}, {inj.get('phone')})."
+        )
+        obj["forbidden_pii"] = [s for s in (inj.get("name"), inj.get("phone")) if s]
+    if stratum in {"sparse_input", "adv_missing_field"}:
+        obj["missing_fields"] = extra.get("missing_fields", [])
     return obj
 
 
@@ -563,13 +558,16 @@ def _dedup_key(text: str) -> str:
     return hashlib.sha1(text.strip().lower().encode()).hexdigest()
 
 
+# Weighted toward the safety-critical behaviours (gap-flagging + PII redaction)
+# so training data teaches them, not just routine notes. --count scales these
+# proportionally. ~59% varied routine, ~41% hard behaviours.
 STRATUM_PLAN = {
-    "routine_session": 120,
-    "incident": 60,
-    "capacity_building": 80,
-    "sparse_input": 50,
-    "adv_pii_check": 15,
-    "adv_missing_field": 15,
+    "routine_session": 110,
+    "incident": 50,
+    "capacity_building": 50,
+    "sparse_input": 55,
+    "adv_pii_check": 45,
+    "adv_missing_field": 45,
 }
 
 ADV_STRATA = {"adv_pii_check", "adv_missing_field"}
@@ -582,6 +580,7 @@ def generate_dataset(
     seed: int = 42,
     verifier: "Callable[[str, dict, str], bool] | None" = None,
     teacher_model: str | None = None,
+    checkpoint_path: "pathlib.Path | None" = None,
 ) -> list[dict]:
     """Generate records across all strata.
 
@@ -659,6 +658,10 @@ def generate_dataset(
                         rec["forbidden_pii"] = obj["forbidden_pii"]
 
                 records.append(rec)
+                if checkpoint_path is not None:
+                    # Append-as-you-go so a long batch survives an interrupt.
+                    with checkpoint_path.open("a", encoding="utf-8") as ckpt:
+                        ckpt.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 made += 1
                 consecutive_fail = 0
             except (ValueError, RuntimeError) as exc:
@@ -675,7 +678,6 @@ def generate_dataset(
 def main(argv: list[str] | None = None) -> int:
     """CLI: generate a stratified synthetic dataset and write train/val/test splits."""
     import argparse
-    import pathlib
 
     from ndis.splits import write_splits
 
@@ -735,17 +737,22 @@ def main(argv: list[str] | None = None) -> int:
             f"(faithfulness judge: {verifier.judge_name})."  # type: ignore[attr-defined]
         )
 
+    out_dir = pathlib.Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = out_dir / "seed.jsonl"
+    checkpoint.unlink(missing_ok=True)  # fresh run; append-as-you-go below
+
     mode = "offline template" if args.offline else f"LLM teacher ({args.teacher_model})"
-    print(f"Generating ~{sum(plan.values())} records via {mode} ...")
+    print(f"Generating ~{sum(plan.values())} records via {mode} (checkpoint: {checkpoint}) ...")
     records = generate_dataset(
         plan,
         offline=args.offline,
         seed=args.seed,
         verifier=verifier,
         teacher_model=args.teacher_model,
+        checkpoint_path=checkpoint,
     )
 
-    out_dir = pathlib.Path(args.out_dir)
     counts = write_splits(records, out_dir, seed=args.seed)
     print(f"\nWrote {counts['seed']} records to {out_dir}/")
     for name in ("train", "val", "test"):
