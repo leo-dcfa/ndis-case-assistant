@@ -580,7 +580,7 @@ def generate_dataset(
     *,
     offline: bool = False,
     seed: int = 42,
-    faithfulness_filter: "Callable[[str, dict], bool] | None" = None,
+    verifier: "Callable[[str, dict, str], bool] | None" = None,
     teacher_model: str | None = None,
 ) -> list[dict]:
     """Generate records across all strata.
@@ -588,10 +588,11 @@ def generate_dataset(
     ``offline=True`` uses the deterministic template generator (no LLM, no
     network); otherwise the licensed open-weight Ollama teacher is used.
 
-    ``faithfulness_filter(input, target) -> bool`` is an optional gate: any pair
-    it rejects is dropped and regenerated, so embellished teacher output never
-    enters the dataset (training on it would teach fabrication). The filter must
-    be a LOCAL judge (heuristic or local LLM) — never a frontier API.
+    ``verifier(input, target, stratum) -> bool`` is an optional compliance gate:
+    any pair it rejects is dropped and regenerated, so only fully-compliant
+    exemplars (faithful + schema-valid + PII-clean + structured) become training
+    data. Build one with ``eval.verify.build_compliance_verifier`` — it must be
+    LOCAL (rubric + local judge), never a frontier API.
     """
     plan = count_per_stratum or STRATUM_PLAN
     records: list[dict] = []
@@ -626,12 +627,10 @@ def generate_dataset(
                     consecutive_fail += 1
                     continue
 
-                if faithfulness_filter is not None and not faithfulness_filter(
-                    obj["input"], obj["target"]
-                ):
+                if verifier is not None and not verifier(obj["input"], obj["target"], stratum):
                     dropped += 1
                     consecutive_fail += 1
-                    print(f"  ✗ dropped unfaithful pair ({stratum}); {dropped} dropped so far")
+                    print(f"  ✗ dropped non-compliant pair ({stratum}); {dropped} dropped so far")
                     continue
 
                 key = _dedup_key(obj["input"])
@@ -669,7 +668,7 @@ def generate_dataset(
                     time.sleep(0.5)
 
     if dropped:
-        print(f"Faithfulness filter dropped {dropped} pair(s) before they entered the dataset.")
+        print(f"Compliance verifier dropped {dropped} pair(s) before they entered the dataset.")
     return records
 
 
@@ -707,14 +706,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--filter",
         action="store_true",
-        help="Drop pairs a LOCAL faithfulness judge rejects (recommended for teacher runs).",
+        help="Keep only fully-compliant pairs (faithful + schema-valid + PII-clean + structured) "
+        "via a LOCAL verifier. Recommended for teacher runs.",
     )
     parser.add_argument(
         "--filter-judge",
         choices=["heuristic", "llm"],
         default="heuristic",
-        help="Judge for --filter. 'heuristic' catches only number/ID fabrication; use 'llm' "
-        "(local 27B) to catch embellished prose. Both run locally.",
+        help="Faithfulness judge inside --filter. 'heuristic' catches only number/ID fabrication; "
+        "'llm' (local 27B) also catches embellished prose. Both run locally.",
     )
     args = parser.parse_args(argv)
 
@@ -724,17 +724,16 @@ def main(argv: list[str] | None = None) -> int:
     scale = args.count / total_plan
     plan = {s: max(1, round(n * scale)) for s, n in STRATUM_PLAN.items()}
 
-    faith_filter: Callable[[str, dict], bool] | None = None
+    verifier: Callable[[str, dict, str], bool] | None = None
     if args.filter:
         # Lazy import keeps ndis independent of the eval package unless filtering.
-        from eval.judge import make_judge
+        from eval.verify import build_compliance_verifier
 
-        judge = make_judge(args.filter_judge)
-
-        def faith_filter(inp: str, target: dict) -> bool:
-            return judge.judge_faithfulness(inp, target).is_faithful
-
-        print(f"Faithfulness filter ON (local judge: {judge.name}).")
+        verifier = build_compliance_verifier(args.filter_judge)
+        print(
+            f"Compliance verifier ON: faithful + schema-valid + PII-clean + structured "
+            f"(faithfulness judge: {verifier.judge_name})."  # type: ignore[attr-defined]
+        )
 
     mode = "offline template" if args.offline else f"LLM teacher ({args.teacher_model})"
     print(f"Generating ~{sum(plan.values())} records via {mode} ...")
@@ -742,7 +741,7 @@ def main(argv: list[str] | None = None) -> int:
         plan,
         offline=args.offline,
         seed=args.seed,
-        faithfulness_filter=faith_filter,
+        verifier=verifier,
         teacher_model=args.teacher_model,
     )
 

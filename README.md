@@ -10,15 +10,17 @@ See [`docs/prd.md`](docs/prd.md) for the full product spec.
 
 ## Status
 
-Per PRD §10, the first deliverable is **Phase 0 + Phase 1 only** — scaffold + a working,
-eval-driven harness that scores a dummy model end-to-end. No fine-tuning yet.
+Eval-driven build: the harness and baseline come *before* any fine-tuning. See
+[`docs/PLAN.md`](docs/PLAN.md) for the full methodology (filtered distillation, model
+choices, the data-generation recipe).
 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 0 — Scaffold | Repo, schema, config, synthetic generator (LLM + offline), frozen splits | ✅ Done |
 | 1 — Evaluation harness | Automated + judged scorers, strata, 3 failure suites, judge calibration, scorecard | ✅ Done |
 | 2 — Baseline | Prompted Qwen3-8B measured + 27B judge calibrated → [`baselines/qwen3-8b.md`](baselines/qwen3-8b.md) (**BLOCKED**: sets the bar) | ✅ Done |
-| 3 — Fine-tune v1 | QLoRA fine-tune on training set | ⏳ Next |
+| 2.5 — Data pipeline | Accurate NDIS taxonomy + **compliance-verified** synthetic generation | ✅ Done |
+| 3 — Fine-tune v1 | QLoRA on verified data until it clears the §2 bar | ⏳ Next |
 | 4 — Shrink protocol | Retrain at 4B, then 1.5B | ⏳ |
 | 5 — Serving + cascade | vLLM endpoint with fallback | ⏳ |
 | 6 — Integration surface | FastAPI `POST /draft-note` | ⏳ |
@@ -104,6 +106,7 @@ ndis-case-assistant/
 │       ├── judge.py            ← heuristic + local-LLM judges
 │       ├── strata.py           ← stratified test-set loader
 │       ├── scorecard.py        ← aggregate vs §2 bar; console/JSON/HTML
+│       ├── verify.py           ← 4-check compliance verifier for training data
 │       ├── calibrate_judge.py  ← judge–human agreement
 │       ├── calibration/        ← human_labels.jsonl fixture
 │       ├── models.py           ← pydantic judge contracts + result dataclasses
@@ -135,6 +138,11 @@ ndis-case-assistant/
 1. **License-clean teacher** — synthetic data comes from a local open-weight model (Ollama
    Qwen3.6) or the deterministic offline generator. **No frontier-API outputs** ever enter the
    training/eval lineage. Each batch records its teacher in `meta`.
+2. **Filtered (rejection-sampling) distillation** — the teacher *proposes* pairs; a local
+   **4-check verifier** (`eval/verify.py`) keeps only those that are faithful + schema-valid +
+   PII-clean + correctly structured, so every training example is a fully-compliant exemplar and
+   the teacher's embellishments never become training signal. Enable with
+   `--filter` (see `make synth` / `make synth-fast`). Methodology: [`docs/PLAN.md`](docs/PLAN.md).
 2. **Offline-by-default eval** — the harness runs with zero external dependencies (deterministic
    generator + heuristic judge), so CI and the Phase 1 DoD are reproducible. The LLM teacher/judge
    are opt-in for higher fidelity.
