@@ -312,6 +312,9 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
         "Rules:\n"
         "- Use ONLY facts present in the raw input. Do NOT introduce any number, date, "
         "name, duration, location, or detail that is not in the input.\n"
+        "- Record only OBSERVABLE facts from the input. Do NOT characterise the "
+        "participant's mood, engagement, progress, or the significance of events "
+        "(e.g. 'engaged well', 'a milestone', 'as usual') unless those words are in the input.\n"
         "- Reword into calm, objective, third-person, past-tense professional prose.\n"
         f"- service_type must be EXACTLY: {facts['service_type']}\n"
     )
