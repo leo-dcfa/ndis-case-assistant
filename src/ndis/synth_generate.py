@@ -282,7 +282,6 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
     facts = _sample_facts(stratum, random)
     style_key = random.choice(list(INPUT_STYLES.keys()))
     input_text, extra = _render_input_offline(facts, style_key, stratum)
-    seed_hint = _build_stratum_seed(stratum, facts["service_type"])
 
     target_schema = {
         "participant_id": "...",
@@ -304,8 +303,6 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
     prompt = (
         "You are given a support worker's RAW INPUT. Produce ONLY the structured NDIS "
         "case note (the target) as JSON, derived STRICTLY from that input.\n\n"
-        f"Context: {STRATUM_PROMPTS[stratum]}\n"
-        f"Tone angle (do NOT add facts): {seed_hint}\n\n"
         "--- RAW WORKER INPUT (the ONLY source of truth) ---\n"
         f"{input_text}\n"
         "---------------------------------------------------\n\n"
