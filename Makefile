@@ -21,8 +21,8 @@ dev-init: ## Install dependencies with uv
 # Phase 0: Synthetic data generation (make synth)
 # ---------------------------------------------------------------------------
 
-synth: ## Generate stratified synthetic dataset via the Ollama teacher (default ~20 records)
-	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20
+synth: ## Generate teacher data with the local LLM faithfulness filter (drops embellished pairs)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20 --filter --filter-judge llm
 
 synth-offline: ## Generate dataset with the deterministic no-LLM generator (no Ollama needed)
 	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 60 --offline

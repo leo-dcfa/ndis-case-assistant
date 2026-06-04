@@ -6,6 +6,7 @@ import hashlib
 import json
 import random
 import time
+from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any, cast
 
@@ -104,17 +105,18 @@ FAKE_STAFF = [
     "WKR-E (Riley)",
 ]
 
+# Must stay in sync with config/required_fields.yaml service_type options.
 SERVICE_TYPES = [
-    "Support Association",
-    "Assist Daily Life",
-    "Community Participation",
-    "Capacity Building",
-    "Consumed Materials",
-    "Transportation",
-    "Group Care Activity",
-    "Short Term Accommodation",
-    "Assessment and Reporting",
-    "Case Management",
+    "Assistance with Daily Life",
+    "Assistance with Social, Economic and Community Participation",
+    "Development of Daily Living and Life Skills",
+    "Group and Centre Based Activities",
+    "Transport",
+    "Short Term Accommodation and Assistance",
+    "Support Coordination",
+    "Specialist Support Coordination",
+    "Therapy Supports",
+    "Consumables",
     "Other",
 ]
 
@@ -363,22 +365,22 @@ def generate_one(stratum: str) -> dict[str, Any]:
             temperature=0.85,
             max_tokens=2400,
             top_p=0.9,
+            # Ollama: Qwen3 teacher is a thinking model — without this it spends the
+            # whole token budget on hidden reasoning and returns empty content.
+            extra_body={"think": False},
         )
-        raw = resp.choices[0].message.content
+        raw = resp.choices[0].message.content or ""
     except Exception as exc:
         raise RuntimeError(f"LLM call failed: {exc}") from exc
 
-    assert raw is not None, "response content must not be None"
+    # coerce_draft strips any <think> block and markdown fences, then extracts the
+    # JSON object. Empty/garbage -> {} -> ValueError so generate_dataset retries.
+    from ndis.notes import coerce_draft
 
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        cleaned = "\n".join(line for line in lines[1:] if not line.strip().startswith("```"))
-
-    s, e = cleaned.find("{"), cleaned.rfind("}")
-    if s == -1 or e == -1:
-        raise ValueError(f"No JSON object found in response. First 200 chars:\n{cleaned[:200]}")
-    return json.loads(cleaned[s : e + 1])
+    obj = coerce_draft(raw)
+    if not obj:
+        raise ValueError(f"No JSON object found in response. First 200 chars:\n{raw[:200]!r}")
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -395,16 +397,18 @@ def generate_one(stratum: str) -> dict[str, Any]:
 from ndis.notes import DURATION_GAP, GAP_MARKER  # noqa: E402
 
 ACTIVITY_BY_SERVICE = {
-    "Assist Daily Life": "completed personal-care and household routines",
-    "Community Participation": "attended a community group activity",
-    "Capacity Building": "practised a targeted independence skill",
-    "Transportation": "travelled to a scheduled appointment",
-    "Group Care Activity": "took part in a supported group session",
-    "Case Management": "reviewed supports and coordinated services",
-    "Assessment and Reporting": "completed a structured assessment",
-    "Short Term Accommodation": "settled into short-term accommodation",
-    "Support Association": "received coordinated support",
-    "Consumed Materials": "used consumable supports for the activity",
+    "Assistance with Daily Life": "completed personal-care and household routines",
+    "Assistance with Social, Economic and Community Participation": (
+        "attended a community group activity"
+    ),
+    "Development of Daily Living and Life Skills": "practised a targeted independence skill",
+    "Group and Centre Based Activities": "took part in a supported group session",
+    "Transport": "travelled to a scheduled appointment",
+    "Short Term Accommodation and Assistance": "settled into short-term accommodation",
+    "Support Coordination": "reviewed supports and coordinated services",
+    "Specialist Support Coordination": "coordinated complex supports with providers",
+    "Therapy Supports": "completed a structured assessment session",
+    "Consumables": "used consumable supports for the activity",
     "Other": "engaged in the planned support activity",
 }
 
@@ -574,14 +578,21 @@ def generate_dataset(
     *,
     offline: bool = False,
     seed: int = 42,
+    faithfulness_filter: "Callable[[str, dict], bool] | None" = None,
 ) -> list[dict]:
     """Generate records across all strata.
 
     ``offline=True`` uses the deterministic template generator (no LLM, no
     network); otherwise the licensed open-weight Ollama teacher is used.
+
+    ``faithfulness_filter(input, target) -> bool`` is an optional gate: any pair
+    it rejects is dropped and regenerated, so embellished teacher output never
+    enters the dataset (training on it would teach fabrication). The filter must
+    be a LOCAL judge (heuristic or local LLM) — never a frontier API.
     """
     plan = count_per_stratum or STRATUM_PLAN
     records: list[dict] = []
+    dropped = 0
     rng = random.Random(seed)
 
     for stratum, target in plan.items():
@@ -595,6 +606,13 @@ def generate_dataset(
                 obj = generate_one_offline(stratum, rng) if offline else generate_one(stratum)
                 if not obj.get("input") or not obj.get("target"):
                     print(f"  ⚠ empty output (retry {made + 1}/{target})")
+                    continue
+
+                if faithfulness_filter is not None and not faithfulness_filter(
+                    obj["input"], obj["target"]
+                ):
+                    dropped += 1
+                    print(f"  ✗ dropped unfaithful pair ({stratum}); {dropped} dropped so far")
                     continue
 
                 key = _dedup_key(obj["input"])
@@ -626,6 +644,8 @@ def generate_dataset(
                 if not offline:
                     time.sleep(0.5)
 
+    if dropped:
+        print(f"Faithfulness filter dropped {dropped} pair(s) before they entered the dataset.")
     return records
 
 
@@ -655,6 +675,18 @@ def main(argv: list[str] | None = None) -> int:
         help="Directory to write seed.jsonl + train/val/test splits.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--filter",
+        action="store_true",
+        help="Drop pairs a LOCAL faithfulness judge rejects (recommended for teacher runs).",
+    )
+    parser.add_argument(
+        "--filter-judge",
+        choices=["heuristic", "llm"],
+        default="heuristic",
+        help="Judge for --filter. 'heuristic' catches only number/ID fabrication; use 'llm' "
+        "(local 27B) to catch embellished prose. Both run locally.",
+    )
     args = parser.parse_args(argv)
 
     # Scale STRATUM_PLAN down/up to the requested total, keeping proportions and
@@ -663,9 +695,23 @@ def main(argv: list[str] | None = None) -> int:
     scale = args.count / total_plan
     plan = {s: max(1, round(n * scale)) for s, n in STRATUM_PLAN.items()}
 
+    faith_filter: Callable[[str, dict], bool] | None = None
+    if args.filter:
+        # Lazy import keeps ndis independent of the eval package unless filtering.
+        from eval.judge import make_judge
+
+        judge = make_judge(args.filter_judge)
+
+        def faith_filter(inp: str, target: dict) -> bool:
+            return judge.judge_faithfulness(inp, target).is_faithful
+
+        print(f"Faithfulness filter ON (local judge: {judge.name}).")
+
     mode = "offline template" if args.offline else f"LLM teacher ({OLLAMA_MODEL})"
     print(f"Generating ~{sum(plan.values())} records via {mode} ...")
-    records = generate_dataset(plan, offline=args.offline, seed=args.seed)
+    records = generate_dataset(
+        plan, offline=args.offline, seed=args.seed, faithfulness_filter=faith_filter
+    )
 
     out_dir = pathlib.Path(args.out_dir)
     counts = write_splits(records, out_dir, seed=args.seed)

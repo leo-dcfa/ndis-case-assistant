@@ -14,7 +14,7 @@ def _valid_payload() -> dict:
         "participant_id": "PRT-0042",
         "date_of_service": "2025-04-02",
         "duration_minutes": 60,
-        "service_type": "Assist Daily Life",
+        "service_type": "Assistance with Daily Life",
         "goal_linkage": "Increase independence",
         "location": "Participant's home",
         "staff_presented_by": "WKR-A (Alex)",

@@ -19,19 +19,22 @@ required_fields:
   - field: service_type
     type: string
     required: true
+    # Aligned to the NDIS Support Catalogue / Pricing Arrangements support
+    # categories. Confirm against the CURRENT NDIS Pricing Arrangements & Price
+    # Limits before release — category names/line items are revised annually.
     options:
-      - "Support Association"
-      - "Assist Daily Life"
-      - "Community Participation"
-      - "Capacity Building"
-      - "Consumed Materials"
-      - "Transportation"
-      - "Group Care Activity"
-      - "Short Term Accommodation"
-      - "Assessment and Reporting"
-      - "Case Management"
+      - "Assistance with Daily Life"
+      - "Assistance with Social, Economic and Community Participation"
+      - "Development of Daily Living and Life Skills"
+      - "Group and Centre Based Activities"
+      - "Transport"
+      - "Short Term Accommodation and Assistance"
+      - "Support Coordination"
+      - "Specialist Support Coordination"
+      - "Therapy Supports"
+      - "Consumables"
       - "Other"
-    description: "NDIS support category code/title"
+    description: "NDIS support category (see NDIS Support Catalogue)"
   - field: goal_linkage
     type: string
     required: true
