@@ -50,4 +50,4 @@ build-backend = "hatchling.build"
 packages = ["src/ndis", "src"]
 
 [project.scripts]
-dev-init = "cli:main"
+ndis = "cli:main"

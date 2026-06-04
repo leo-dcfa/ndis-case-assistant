@@ -1,18 +1,24 @@
 # NDIS Case Note Assistant
 
-> Owned small-model fine-tune for structured NDIS case note generation.  
-> Builds → evaluates → fine-tunes → serves a locally-runnable model that turns rough worker input into compliance-ready NDIS case notes — **without inventing facts**.
+> Owned small-model fine-tune for structured NDIS case note generation.
+> Builds → evaluates → fine-tunes → serves a locally-runnable model that turns rough worker
+> input into compliance-ready NDIS case notes — **without inventing facts**.
+
+See [`docs/prd.md`](docs/prd.md) for the full product spec.
 
 ---
 
-## Status: Phase 0 + Phase 1 complete (scaffold + evaluation harness)
+## Status
+
+Per PRD §10, the first deliverable is **Phase 0 + Phase 1 only** — scaffold + a working,
+eval-driven harness that scores a dummy model end-to-end. No fine-tuning yet.
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 0 — Scaffold | Repo structure, schema, config, synthetic data generator | ✅ Done |
-| 1 — Evaluation harness | Rubric scorer, Pydantic Evals metrics, failure suites | ✅ Done |
-| 2 — Baseline | Prompted Qwen3-8B measurement | ⏳ Next |
-| 3 — Fine-tune v1 | QLoRA fine-tune on training set | ⏳ Awaiting Phase 2 |
+| 0 — Scaffold | Repo, schema, config, synthetic generator (LLM + offline), frozen splits | ✅ Done |
+| 1 — Evaluation harness | Automated + judged scorers, strata, 3 failure suites, judge calibration, scorecard | ✅ Done |
+| 2 — Baseline | Prompted Qwen3-8B measurement (`--mode openai`) | ⏳ Next |
+| 3 — Fine-tune v1 | QLoRA fine-tune on training set | ⏳ |
 | 4 — Shrink protocol | Retrain at 4B, then 1.5B | ⏳ |
 | 5 — Serving + cascade | vLLM endpoint with fallback | ⏳ |
 | 6 — Integration surface | FastAPI `POST /draft-note` | ⏳ |
@@ -23,18 +29,55 @@
 ## Quick start
 
 ```bash
-# 1. Set up the environment (requires uv)
-make dev-init
+make dev-init          # uv sync
 
-# 2. Generate synthetic training/eval data (Phase 0 DoD)
-make synth
+# Phase 0 — synthetic data
+make synth-offline     # deterministic, no LLM needed → data/splits/{seed,train,val,test}.jsonl
+make synth             # via the local open-weight teacher (Ollama qwen3.6:27b)
 
-# 3. Run the evaluation harness on a dummy model (Phase 1 DoD)
-make eval
-
-# 4. Generate HTML report
-make eval-html
+# Phase 1 — evaluation harness (the DoD)
+make eval              # score the dummy (golden) model end-to-end → scorecard, RELEASE-OK
+make eval-naive        # score a deliberately weak baseline → gates FAIL (proves they bite)
+make eval-html         # also write runs/scorecard.{json,html}
+make calibrate         # judge-vs-human agreement on the calibration fixture
+make test              # pytest
 ```
+
+`make eval` self-bootstraps an offline dataset if none exists, so it always runs standalone.
+
+---
+
+## How the harness works
+
+A **model-under-test** turns worker input → a drafted note dict
+(`src/eval/model_under_test.py`):
+
+- `dummy` (`GoldenModel`) — returns the gold target; a perfect-model self-test that should
+  clear every gate. Used for the Phase 1 DoD.
+- `naive` (`NaiveModel`) — a weak no-LLM baseline that fails on purpose (leaks PII, fabricates
+  a duration, drops fields) so the gates are demonstrably effective.
+- `openai` (`OpenAIModel`) — drafts via a local OpenAI-compatible endpoint (Ollama / vLLM).
+  This is the Phase 2 prompted baseline and, later, the fine-tuned model. **No frontier APIs.**
+
+Each example is scored on:
+
+| Dimension | How | Source |
+|-----------|-----|--------|
+| Structural compliance | deterministic | `eval/rubric.py` — required fields present, ordered, typed; gap-flag aware |
+| PII clean | deterministic | `eval/rubric.py` — phone/email/NDIS regex + per-case forbidden strings |
+| Faithfulness | judged | `eval/judge.py` — grounds every number/date/ID in the input |
+| Professional register | judged | `eval/judge.py` — third-person, no fillers, well-formed |
+| Billable evidence | judged | `eval/judge.py` |
+
+The judge is pluggable: `--judge heuristic` (deterministic, offline, used in CI) or
+`--judge llm` (a **local open-weight** model — never a frontier API). Calibrate the LLM judge
+against human labels (`make calibrate`) before trusting it for gating.
+
+**Adversarial failure suites** (`src/eval/failure_suites/`) are committed fixtures, each a hard
+gate that must score **100%**: `fabrication`, `pii_leakage`, `missing_element`.
+
+The **scorecard** (`eval/scorecard.py`) separates *targets* (structural ≥ 98%, register ≥ 95%)
+from *hard gates* (the three suites = 100%). `release_ok` is true only when every hard gate passes.
 
 ---
 
@@ -43,36 +86,35 @@ make eval-html
 ```
 ndis-case-assistant/
 ├── config/
-│   ├── required_fields.yaml    ← Editable NDIS compliance rule set (§5.1)
-│   └── model.yaml              ← Base model, LoRA, training hyperparams
-├── data/
-│   ├── __init__.py
-│   ├── schema.py               ← CaseNote Pydantic model (§5.1)
-│   ├── deidentify.py           ← PII redaction pipeline (§5.3)
-│   ├── synth_generate.py       ← Synthetic seed data generator (§5.2)
-│   └── splits/                 ← train / val / test (test frozen)
-├── eval/
-│   ├── __init__.py
-│   ├── eval_suite.py          ← Pydantic Evals evaluation harness (§6.1)
-│   ├── models.py               ← Pydantic output schemas (CaseNoteOutputSchema, FaithfulnessCheck, PIIComplianceCheck)
-│   ├── strata.py               ← Stratified test-set loader (§6.2)
-│   └── failure_suites/         ← Adversarial failure suites (§6.3)
-│       ├── fabrication.py      ← Fabrication suite (hard gate)
-│       ├── pii_leakage.py      ← PII leakage suite (hard gate)
-│       └── missing_element.py  ← Missing element suite (hard gate)
-├── train/
-│   ├── __init__.py
-│   └── finetune_qlora.py       ← Unsloth QLoRA fine-tuning (§7 Phase 3)
-├── serve/
-│   ├── __init__.py
-│   ├── vllm_server.py          ← vLLM endpoint (§5)
-│   ├── cascade.py              ← Fallback / escalation logic (§7 Phase 5)
-│   └── api.py                  ← FastAPI: POST /draft-note (§7 Phase 6)
-├── runs/                       ← Scorecards + run logs (JSON)
-├── Makefile                    ← synth, eval, train, serve commands
-├── pyproject.toml              ← Dependencies & tool config
-└── README.md                   ← This file
+│   ├── required_fields.yaml    ← editable NDIS compliance rule set (drives validation)
+│   └── model.yaml              ← base model, LoRA, training hyperparams
+├── src/
+│   ├── cli.py                  ← typer CLI (synth, deid)
+│   ├── ndis/
+│   │   ├── models.py           ← CaseNote schema + config dataclasses + load_config
+│   │   ├── config_loader.py    ← cached config accessor
+│   │   ├── notes.py            ← gap markers + lenient draft parsing (shared)
+│   │   ├── synth_generate.py   ← synthetic generator: LLM teacher + offline template + CLI
+│   │   ├── splits.py           ← stratified train/val/test (test frozen)
+│   │   └── deidentify.py       ← PII redaction (human-gated for real data)
+│   └── eval/
+│       ├── eval_suite.py       ← harness entry point (python -m eval.eval_suite)
+│       ├── model_under_test.py ← dummy / naive / openai models
+│       ├── rubric.py           ← automated structural + PII scorers
+│       ├── judge.py            ← heuristic + local-LLM judges
+│       ├── strata.py           ← stratified test-set loader
+│       ├── scorecard.py        ← aggregate vs §2 bar; console/JSON/HTML
+│       ├── calibrate_judge.py  ← judge–human agreement
+│       ├── calibration/        ← human_labels.jsonl fixture
+│       ├── models.py           ← pydantic judge contracts + result dataclasses
+│       └── failure_suites/     ← fabrication, pii_leakage, missing_element (hard gates)
+├── data/splits/                ← generated datasets (gitignored)
+├── runs/                       ← scorecards + run logs (gitignored)
+├── tests/                      ← pytest
+├── Makefile · pyproject.toml · README.md
 ```
+
+`train/` and `serve/` are intentionally not built yet (Phases 3+).
 
 ---
 
@@ -83,47 +125,41 @@ ndis-case-assistant/
 | Structural compliance | ≥ 98% | No |
 | Faithfulness (adversarial suite) | 100% | **Yes** |
 | PII handling (privacy suite) | 100% | **Yes** |
+| Missing mandatory element (suite) | 100% | **Yes** |
 | Professional register | ≥ 95% | No |
 
 ---
 
 ## Key design decisions
 
-1. **Synthetic-first pipeline** — all data is fake until the human owner enables real-data ingestion via `enable_real_data_ingestion()` or `.env` toggle.
-2. **Pydantic Evals harness** — deterministic metrics (faithfulness, PII) use Pydantic-validated models; replaceable with LLM judge later.
-3. **Hard gates on faithfulness & PII** — zero tolerance for fabrication or PII leakage blocks release, per PRD requirements.
-4. **Config-driven compliance** — edit `config/required_fields.yaml` to update rules without code changes.
+1. **License-clean teacher** — synthetic data comes from a local open-weight model (Ollama
+   Qwen3.6) or the deterministic offline generator. **No frontier-API outputs** ever enter the
+   training/eval lineage. Each batch records its teacher in `meta`.
+2. **Offline-by-default eval** — the harness runs with zero external dependencies (deterministic
+   generator + heuristic judge), so CI and the Phase 1 DoD are reproducible. The LLM teacher/judge
+   are opt-in for higher fidelity.
+3. **Hard gates block release** — fabrication and PII leakage are non-negotiable; `release_ok`
+   gates on them.
+4. **Config-driven compliance** — edit `config/required_fields.yaml` to change the rule set
+   without code changes.
+5. **Gap markers, not crashes** — drafts may flag a genuinely-missing element (`[not recorded]`)
+   rather than invent one; the scorers treat that as correct in sparse/adversarial strata and as
+   a structural failure elsewhere.
 
 ---
 
-## Environment setup
+## Real data (later, human-gated)
 
-Requires:
-- Python ≥ 3.12 (or uv-managed environment)
-- `uv` for dependency management
-- RTX 5090 (32GB VRAM) when starting training phase
+Real participant data never enters the repo or any cloud call. The de-id pipeline
+(`src/ndis/deidentify.py`) exists, but ingesting real notes is a manual step the owner runs only
+once data agreements are in place (PRD §5.3). Use the CLI to sanity-check redaction:
 
-Install dependencies:
 ```bash
-make dev-init
+uv run ndis deid "call mum Jenny on 0412 345 678"
 ```
-
----
-
-## Adding real data later
-
-Real data ingestion is **disabled by default**. To enable:
-
-1. Ensure data agreements are in place
-2. Set `REAL_DATA_INGESTION_ENABLED=true` in `.env`, or call:
-   ```python
-   from data.deidentify import enable_real_data_ingestion
-   enable_real_data_ingestion(True)
-   ```
-3. Run the de-identification pipeline before any data enters training/eval
 
 ---
 
 ## License
 
-MIT — see LICENSE file. Training lineage is license-clean (no frontier-API outputs).
+MIT. Training lineage is license-clean (no frontier-API outputs).

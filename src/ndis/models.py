@@ -12,7 +12,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-DEFAULT_CONFIG_DIR = pathlib.Path(__file__).resolve().parent.parent / "config"
+# repo_root/config — this file lives at repo_root/src/ndis/models.py
+DEFAULT_CONFIG_DIR = pathlib.Path(__file__).resolve().parents[2] / "config"
 
 
 @dataclass(frozen=True)
@@ -37,10 +38,17 @@ class LoRAConfig:
     r: int = 16
     alpha: int = 32
     dropout: float = 0.05
-    target_modules: list[str] = field(default_factory=lambda: [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ])
+    target_modules: list[str] = field(
+        default_factory=lambda: [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ]
+    )
     bias: str = "none"
     task_type: str = "CAUSAL_LM"
 
@@ -144,14 +152,16 @@ def _load_required_fields(path: pathlib.Path) -> RequiredFieldsConfig:
     fields = []
     for item in cfg_dict.get("required_fields", []):
         assert isinstance(item, dict)
-        fields.append(FieldSpec(
-            name=item["field"],
-            type_name=item["type"],
-            required=item.get("required", False),
-            description=item.get("description", ""),
-            format_hint=item.get("format"),
-            options=item.get("options", []),
-        ))
+        fields.append(
+            FieldSpec(
+                name=item["field"],
+                type_name=item["type"],
+                required=item.get("required", False),
+                description=item.get("description", ""),
+                format_hint=item.get("format"),
+                options=item.get("options", []),
+            )
+        )
 
     order = cfg_dict.get("structure_order", [f.name for f in fields if f.required])
     tone = cfg_dict.get("tone_guidelines", {})
@@ -176,7 +186,9 @@ class CaseNote(BaseModel):
     narrative_summary: str = Field(description="Narrative of what occurred during the session")
     billable_evidence: str = Field(description="Evidence supporting billing")
     outcomes_achieved: List[str] = Field(description="Specific outcomes or progress noted")
-    risk_management: Optional[str] = Field(default=None, description="Risks identified or interventions")
+    risk_management: Optional[str] = Field(
+        default=None, description="Risks identified or interventions"
+    )
     follow_up_needed: bool = Field(description="Whether follow-up is indicated")
     follow_up_notes: Optional[str] = Field(default=None, description="Notes for next session")
 
@@ -226,9 +238,7 @@ class CaseNote(BaseModel):
     def from_dict(cls, data: dict[str, Any]) -> "CaseNote":
         if isinstance(data.get("date_of_service"), str):
             data = dict(data)
-            data["date_of_service"] = datetime.strptime(
-                data["date_of_service"], "%Y-%m-%d"
-            ).date()
+            data["date_of_service"] = datetime.strptime(data["date_of_service"], "%Y-%m-%d").date()
         return cls(**data)
 
     @classmethod

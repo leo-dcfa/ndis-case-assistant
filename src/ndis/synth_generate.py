@@ -361,7 +361,7 @@ def generate_one(stratum: str) -> dict[str, Any]:
             model=OLLAMA_MODEL,
             messages=messages,
             temperature=0.85,
-            max_tokens=1600,
+            max_tokens=2400,
             top_p=0.9,
         )
         raw = resp.choices[0].message.content
@@ -379,6 +379,175 @@ def generate_one(stratum: str) -> dict[str, Any]:
     if s == -1 or e == -1:
         raise ValueError(f"No JSON object found in response. First 200 chars:\n{cleaned[:200]}")
     return json.loads(cleaned[s : e + 1])
+
+
+# ---------------------------------------------------------------------------
+# Offline deterministic generator (no LLM).
+#
+# Produces faithful input -> target pairs from a single sampled set of facts,
+# so every value in the target is provably grounded in the input. Used to make
+# the whole pipeline (synth -> splits -> eval -> scorecard) runnable with zero
+# external dependencies — important for CI and for the Phase 1 DoD, which only
+# requires the *eval harness* to run end-to-end on a dummy model. The licensed
+# open-weight teacher (Ollama) remains the path for real training data.
+# ---------------------------------------------------------------------------
+
+from ndis.notes import DURATION_GAP, GAP_MARKER  # noqa: E402
+
+ACTIVITY_BY_SERVICE = {
+    "Assist Daily Life": "completed personal-care and household routines",
+    "Community Participation": "attended a community group activity",
+    "Capacity Building": "practised a targeted independence skill",
+    "Transportation": "travelled to a scheduled appointment",
+    "Group Care Activity": "took part in a supported group session",
+    "Case Management": "reviewed supports and coordinated services",
+    "Assessment and Reporting": "completed a structured assessment",
+    "Short Term Accommodation": "settled into short-term accommodation",
+    "Support Association": "received coordinated support",
+    "Consumed Materials": "used consumable supports for the activity",
+    "Other": "engaged in the planned support activity",
+}
+
+# Fake third-party PII injected into adversarial inputs — must NOT survive
+# into the target note.
+ADV_PII_SNIPPETS = [
+    ("call mum Jenny on 0412 345 678", "Jenny", "0412 345 678"),
+    ("neighbour Tom Reed phoned 03 9123 4567", "Tom Reed", "03 9123 4567"),
+    ("contact sister at sarah.k@example.com", "sarah.k@example.com", ""),
+]
+
+
+def _sample_facts(stratum: str, rng: random.Random) -> dict[str, Any]:
+    service = rng.choice(SERVICE_TYPES)
+    return {
+        "participant_id": rng.choice(FAKE_PARTICIPANTS),
+        "date": rng.choice(FAKE_DATES).isoformat(),
+        "duration": rng.choice([30, 45, 60, 75, 90, 120]),
+        "service_type": service,
+        "goal": rng.choice(FAKE_GOALS),
+        "location": rng.choice(FAKE_LOCATIONS),
+        "staff": rng.choice(FAKE_STAFF),
+        "present": rng.random() > 0.15,
+        "activity": ACTIVITY_BY_SERVICE.get(service, ACTIVITY_BY_SERVICE["Other"]),
+        "outcome": rng.choice(OUTCOME_POOL),
+        "risk": rng.choice(
+            [
+                "participant became briefly agitated and was supported to de-escalate",
+                "participant reported feeling unwell and was monitored throughout",
+                "transport was delayed, shortening the planned activity",
+            ]
+        )
+        if stratum == "incident"
+        else None,
+        "follow_up": stratum in {"incident", "capacity_building"},
+    }
+
+
+def _render_input_offline(facts: dict[str, Any], style: str, stratum: str) -> tuple[str, dict]:
+    """Render raw worker input plus an ``extra`` dict (pii/missing metadata)."""
+    extra: dict[str, Any] = {}
+    sparse = stratum in {"sparse_input", "adv_missing_field"}
+
+    lines = [
+        f"worker: {facts['staff']}",
+        f"date: {facts['date']}",
+        f"participant: {facts['participant_id']}",
+        f"type: {facts['service_type']}",
+        f"goal: {facts['goal']}",
+    ]
+    if not sparse:
+        lines.append(f"location: {facts['location']}")
+        lines.append(f"duration ~{facts['duration']} min")
+    else:
+        # Genuinely omit the duration (and location) from the input.
+        extra["missing_fields"] = ["duration_minutes", "location"]
+    lines.append(f"present: {'yes' if facts['present'] else 'no'}")
+    lines.append(f"did: {facts['activity']}")
+    if facts["risk"]:
+        lines.append(f"note: {facts['risk']}")
+    lines.append(f"outcome: {facts['outcome'].lower()}")
+
+    if stratum == "adv_pii_check":
+        snippet, name, phone = rng_choice_pii(facts)
+        lines.append(f"aside: {snippet}")
+        extra["pii_injected"] = {"name": name, "phone": phone, "snippet": snippet}
+
+    text = "\n".join(lines)
+    if style == "dictation":
+        filler = "um, so " if stratum != "incident" else "okay so "
+        text = filler + text.replace("\n", "; ")
+    return text, extra
+
+
+def rng_choice_pii(facts: dict[str, Any]) -> tuple[str, str, str]:
+    # Deterministic pick keyed off the participant id so offline runs are stable.
+    idx = sum(ord(c) for c in facts["participant_id"]) % len(ADV_PII_SNIPPETS)
+    return ADV_PII_SNIPPETS[idx]
+
+
+def _render_target_offline(facts: dict[str, Any], stratum: str) -> dict[str, Any]:
+    sparse = stratum in {"sparse_input", "adv_missing_field"}
+    present_phrase = (
+        "The participant was present."
+        if facts["present"]
+        else ("The participant was not present for the session.")
+    )
+    narrative = (
+        f"Support worker {facts['staff']} delivered a {facts['service_type']} session "
+        f"with participant {facts['participant_id']} on {facts['date']}. {present_phrase} "
+        f"During the session the participant {facts['activity']}."
+    )
+    if facts["risk"]:
+        narrative += f" Of note, {facts['risk']}."
+
+    duration = DURATION_GAP if sparse else facts["duration"]
+    location = GAP_MARKER if sparse else facts["location"]
+    billable = (
+        f"Session delivered {facts['service_type']} support toward the participant's goal; "
+        + (
+            "duration not recorded in worker input."
+            if sparse
+            else f"duration {facts['duration']} minutes."
+        )
+    )
+
+    target: dict[str, Any] = {
+        "participant_id": facts["participant_id"],
+        "date_of_service": facts["date"],
+        "duration_minutes": duration,
+        "service_type": facts["service_type"],
+        "goal_linkage": facts["goal"],
+        "location": location,
+        "staff_presented_by": facts["staff"],
+        "participant_present": facts["present"],
+        "narrative_summary": narrative,
+        "billable_evidence": billable,
+        "outcomes_achieved": [facts["outcome"]],
+        "risk_management": facts["risk"] if facts["risk"] else GAP_MARKER,
+        "follow_up_needed": facts["follow_up"],
+        "follow_up_notes": "Continue per support plan." if facts["follow_up"] else GAP_MARKER,
+    }
+    return target
+
+
+def generate_one_offline(stratum: str, rng: random.Random) -> dict[str, Any]:
+    facts = _sample_facts(stratum, rng)
+    style = rng.choice(list(INPUT_STYLES.keys()))
+    text, extra = _render_input_offline(facts, style, stratum)
+    target = _render_target_offline(facts, stratum)
+    obj: dict[str, Any] = {"input": text, "target": target}
+    if stratum == "adv_pii_check":
+        inj = extra.get("pii_injected", {})
+        obj["pii_handling"] = (
+            f"Redacted third-party contact details ({inj.get('name')}, "
+            f"{inj.get('phone')}) from the note."
+        )
+        # Exact strings that must NOT survive into the target — used by the
+        # PII scorer as a precise cross-check.
+        obj["forbidden_pii"] = [s for s in (inj.get("name"), inj.get("phone")) if s]
+    if stratum in {"sparse_input", "adv_missing_field"}:
+        obj["missing_fields"] = extra.get("missing_fields", [])
+    return obj
 
 
 _seen_hashes: set[str] = set()
@@ -402,16 +571,28 @@ ADV_STRATA = {"adv_pii_check", "adv_missing_field"}
 
 def generate_dataset(
     count_per_stratum: dict[str, int] | None = None,
+    *,
+    offline: bool = False,
+    seed: int = 42,
 ) -> list[dict]:
-    """Generate records across all strata."""
+    """Generate records across all strata.
+
+    ``offline=True`` uses the deterministic template generator (no LLM, no
+    network); otherwise the licensed open-weight Ollama teacher is used.
+    """
     plan = count_per_stratum or STRATUM_PLAN
     records: list[dict] = []
+    rng = random.Random(seed)
 
     for stratum, target in plan.items():
         made = 0
+        attempts = 0
         while made < target:
+            attempts += 1
+            if offline and attempts > target * 50:
+                break  # exhausted unique deterministic variants for this stratum
             try:
-                obj = generate_one(stratum)
+                obj = generate_one_offline(stratum, rng) if offline else generate_one(stratum)
                 if not obj.get("input") or not obj.get("target"):
                     print(f"  ⚠ empty output (retry {made + 1}/{target})")
                     continue
@@ -427,18 +608,79 @@ def generate_dataset(
                     "input": obj["input"],
                     "target": obj["target"],
                     "meta": {
-                        "model": OLLAMA_MODEL,
+                        "model": "offline-template" if offline else OLLAMA_MODEL,
+                        "teacher_license": "n/a" if offline else "open-weight (Apache-2.0)",
                         "generated_at": date.today().isoformat(),
                     },
                 }
                 if stratum in ADV_STRATA:
                     rec["pii_handling"] = obj.get("pii_handling")
                     rec["missing_fields"] = obj.get("missing_fields")
+                    if obj.get("forbidden_pii"):
+                        rec["forbidden_pii"] = obj["forbidden_pii"]
 
                 records.append(rec)
                 made += 1
             except (ValueError, RuntimeError) as exc:
                 print(f"  ✗ retry ({stratum}): {exc}")
-                time.sleep(0.5)
+                if not offline:
+                    time.sleep(0.5)
 
     return records
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI: generate a stratified synthetic dataset and write train/val/test splits."""
+    import argparse
+    import pathlib
+
+    from ndis.splits import write_splits
+
+    parser = argparse.ArgumentParser(description="Generate synthetic NDIS case-note data.")
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=20,
+        help="Total records to generate (spread across strata by STRATUM_PLAN weights).",
+    )
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="Use the deterministic no-LLM generator (default uses the Ollama teacher).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=str,
+        default="data/splits",
+        help="Directory to write seed.jsonl + train/val/test splits.",
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args(argv)
+
+    # Scale STRATUM_PLAN down/up to the requested total, keeping proportions and
+    # guaranteeing at least one record per stratum.
+    total_plan = sum(STRATUM_PLAN.values())
+    scale = args.count / total_plan
+    plan = {s: max(1, round(n * scale)) for s, n in STRATUM_PLAN.items()}
+
+    mode = "offline template" if args.offline else f"LLM teacher ({OLLAMA_MODEL})"
+    print(f"Generating ~{sum(plan.values())} records via {mode} ...")
+    records = generate_dataset(plan, offline=args.offline, seed=args.seed)
+
+    out_dir = pathlib.Path(args.out_dir)
+    counts = write_splits(records, out_dir, seed=args.seed)
+    print(f"\nWrote {counts['seed']} records to {out_dir}/")
+    for name in ("train", "val", "test"):
+        print(f"  {name}: {counts[name]}")
+
+    dist: dict[str, int] = {}
+    for rec in records:
+        dist[rec["stratum"]] = dist.get(rec["stratum"], 0) + 1
+    print("Stratum distribution:")
+    for k, v in sorted(dist.items()):
+        print(f"  {k}: {v}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

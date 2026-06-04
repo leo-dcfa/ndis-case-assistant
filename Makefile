@@ -21,21 +21,34 @@ dev-init: ## Install dependencies with uv
 # Phase 0: Synthetic data generation (make synth)
 # ---------------------------------------------------------------------------
 
-synth: ## Generate stratified synthetic dataset (default 20 records)
-	cd $(CURDIR) && python -m ndis.synth_generate --count 20
+synth: ## Generate stratified synthetic dataset via the Ollama teacher (default ~20 records)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 20
 
-synth-large: ## Generate larger synthetic dataset (500 per stratum = 2500 total)
-	cd $(CURDIR) && python -m ndis.synth_generate --count 500
+synth-offline: ## Generate dataset with the deterministic no-LLM generator (no Ollama needed)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 60 --offline
+
+synth-large: ## Generate a larger dataset via the teacher (~340 records)
+	cd $(CURDIR) && uv run python -m ndis.synth_generate --count 340
 
 # ---------------------------------------------------------------------------
-# Phase 1: Evaluation harness (Pydantic Evals)
+# Phase 1: Evaluation harness
 # ---------------------------------------------------------------------------
 
-eval: synth ## Run eval harness on dummy model (golden reference)
-	cd $(CURDIR) && python -m eval.eval_suite --mode dummy
+eval: synth-offline ## Run eval harness end-to-end on the dummy (golden) model
+	cd $(CURDIR) && uv run python -m eval.eval_suite --mode dummy --judge heuristic
 
-eval-html: synth ## Same but output HTML report
-	cd $(CURDIR) && python -m eval.eval_suite --mode dummy --output runs/eval.html --format html
+eval-naive: synth-offline ## Run eval on a deliberately weak baseline (exercises the gates)
+	cd $(CURDIR) && uv run python -m eval.eval_suite --mode naive --judge heuristic
+
+eval-html: synth-offline ## Same as eval but also write an HTML scorecard
+	cd $(CURDIR) && uv run python -m eval.eval_suite --mode dummy --judge heuristic \
+		--out runs/scorecard.json --html runs/scorecard.html
+
+calibrate: ## Report judge-vs-human agreement on the calibration fixture
+	cd $(CURDIR) && uv run python -m eval.calibrate_judge
+
+test: ## Run the pytest suite
+	cd $(CURDIR) && uv run pytest -q
 
 # ---------------------------------------------------------------------------
 # Training (Phase 3+) — placeholder until fine-tuning is needed
@@ -69,7 +82,7 @@ clean: ## Remove generated files (keep source)
 	rm -rf data/splits/seed.jsonl data/splits/train.jsonl data/splits/val.jsonl data/splits/test.jsonl runs/*.json
 	@echo "Cleaned generated data and run artifacts."
 
-check: ## Run linting and type checking
+check: ## Run linting
 	@echo "Running ruff linter..."
-	uv run ruff check src/ndis/ src/eval/ src/train/ src/serve/
+	uv run ruff check src/
 	@echo "Done."

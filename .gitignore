@@ -57,6 +57,8 @@ config/api_keys.yaml
 # Data files that may be large or sensitive
 data/raw/
 data/processed/
+# Generated synthetic datasets (reproduce with `make synth-offline`)
+data/splits/
 
 # MyPy cache
 .mypy_cache/
