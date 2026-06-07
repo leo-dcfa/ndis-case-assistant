@@ -21,33 +21,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from ndis.notes import GAP_MARKER, coerce_draft
-
-DRAFT_SYSTEM_PROMPT = (
-    "You convert a support worker's rough input (bullet points or dictation) into a "
-    "structured, compliance-ready NDIS case note. You FAITHFULLY reshape the input — "
-    "you NEVER invent clinical or factual content. Where a required element is absent "
-    f'from the input, write "{GAP_MARKER}" rather than guessing. Redact any third-party '
-    "personal details (names, phone numbers, emails, addresses). Write in calm, "
-    "objective, professional third-person past tense. Output STRICT JSON only — no "
-    "markdown fences, no commentary."
-)
-
-DRAFT_FIELDS = [
-    "participant_id",
-    "date_of_service",
-    "duration_minutes",
-    "service_type",
-    "goal_linkage",
-    "location",
-    "staff_presented_by",
-    "participant_present",
-    "narrative_summary",
-    "billable_evidence",
-    "outcomes_achieved",
-    "risk_management",
-    "follow_up_needed",
-    "follow_up_notes",
-]
+from ndis.prompts import DRAFT_FIELDS, DRAFT_SYSTEM_PROMPT, build_chat  # noqa: F401  (re-exported)
 
 
 @runtime_checkable
@@ -117,25 +91,77 @@ class OpenAIModel:
         self._client = OpenAI(base_url=base_url, api_key=api_key)
 
     def draft_note(self, input_text: str, stratum: str | None = None) -> dict[str, Any]:
-        user = (
-            "Draft the NDIS case note for this worker input. Return STRICT JSON with "
-            f"exactly these keys: {', '.join(DRAFT_FIELDS)}.\n\n"
-            "--- WORKER INPUT ---\n"
-            f"{input_text}\n"
-            "--------------------"
-        )
         resp = self._client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": DRAFT_SYSTEM_PROMPT},
-                {"role": "user", "content": user},
-            ],
+            messages=build_chat(input_text),  # shared train/serve I/O contract
             temperature=self.temperature,
             max_tokens=1600,
             # Ollama: disable Qwen3 "thinking" for clean, fast JSON output.
             extra_body={"think": False},
         )
         return coerce_draft(resp.choices[0].message.content)
+
+
+class HFModel:
+    """In-process transformers inference for a fine-tuned LoRA adapter.
+
+    Loads the 4-bit base model + the trained adapter and generates greedily —
+    no server needed, so the eval can score an adapter straight after training.
+    Uses the same chat contract as training (``build_chat``).
+    """
+
+    def __init__(
+        self,
+        base_model: str,
+        adapter: str | None = None,
+        max_new_tokens: int = 768,
+    ) -> None:
+        import torch
+        from peft import PeftModel
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+        self.name = f"hf:{adapter or base_model}"
+        self.max_new_tokens = max_new_tokens
+        self._tok = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        if self._tok.pad_token is None:
+            self._tok.pad_token = self._tok.eos_token
+        bnb = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model,
+            quantization_config=bnb,
+            device_map="auto",
+            trust_remote_code=True,
+            dtype=torch.bfloat16,
+        )
+        if adapter:
+            model = PeftModel.from_pretrained(model, adapter)
+        model.eval()
+        self._model = model
+
+    def draft_note(self, input_text: str, stratum: str | None = None) -> dict[str, Any]:
+        import torch
+
+        prompt = self._tok.apply_chat_template(
+            build_chat(input_text),
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = self._tok(prompt, return_tensors="pt").to(self._model.device)
+        with torch.no_grad():
+            out = self._model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=False,
+                pad_token_id=self._tok.pad_token_id,
+            )
+        text = self._tok.decode(out[0][inputs["input_ids"].shape[1] :], skip_special_tokens=True)
+        return coerce_draft(text)
 
 
 def _crude_parse(text: str) -> dict[str, str]:

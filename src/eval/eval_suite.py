@@ -88,10 +88,20 @@ def run(args: argparse.Namespace) -> int:
     if missing_strata:
         print(f"[eval] WARNING: strata with no examples: {missing_strata}", file=sys.stderr)
 
-    # The dummy GoldenModel must know suite ideal answers too, so it can clear
-    # the failure gates (a perfect-model self-test).
-    golden_examples = examples + (failure_suites.ideal_examples() if args.mode == "dummy" else [])
-    model = build_model(args.mode, golden_examples)
+    if args.mode == "hf":
+        from eval.model_under_test import HFModel
+
+        if not args.base_model:
+            print("[eval] --mode hf requires --base-model", file=sys.stderr)
+            return 2
+        model: object = HFModel(args.base_model, adapter=args.adapter)
+    else:
+        # The dummy GoldenModel must know suite ideal answers too, so it can clear
+        # the failure gates (a perfect-model self-test).
+        golden_examples = examples + (
+            failure_suites.ideal_examples() if args.mode == "dummy" else []
+        )
+        model = build_model(args.mode, golden_examples)
     judge = make_judge(args.judge)
 
     scores = [score_example(ex, model, judge) for ex in examples]
@@ -124,9 +134,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--mode",
         default="dummy",
-        choices=["dummy", "naive", "openai"],
-        help="Model under test (dummy=golden self-test).",
+        choices=["dummy", "naive", "openai", "hf"],
+        help="Model under test (dummy=golden self-test; hf=local base+LoRA adapter).",
     )
+    parser.add_argument("--base-model", default=None, help="HF base model id/path (--mode hf).")
+    parser.add_argument("--adapter", default=None, help="LoRA adapter dir (--mode hf).")
     parser.add_argument(
         "--judge",
         default="heuristic",

@@ -63,15 +63,24 @@ baseline: ## Measure prompted Qwen3-8B on the test split (needs Ollama; writes b
 		--split test --out baselines/qwen3-8b.json --html baselines/qwen3-8b.html
 
 # ---------------------------------------------------------------------------
-# Training (Phase 3+) — placeholder until fine-tuning is needed
+# Phase 3: QLoRA fine-tune (TRL + peft, 4-bit, single GPU)
 # ---------------------------------------------------------------------------
 
-train: ## Start QLoRA fine-tune training
-	@echo "Training not yet implemented. Edit config/model.yaml first."
-	@echo "Run 'make train-real' when ready."
+BASE_MODEL ?= Qwen/Qwen3-8B
+ADAPTER    ?= runs/adapters/qwen3-8b-v1
 
-train-real: ## Actually run the fine-tune (UnSloth QLoRA on RTX 5090)
-	cd $(CURDIR) && python -m train.finetune_qlora
+train-smoke: ## Validate the pipeline fast on a local model (30 steps, no download)
+	cd $(CURDIR) && uv run python -m train.finetune_qlora \
+		--base-model Qwen/Qwen2.5-3B-Instruct --max-steps 30 --out runs/adapters/smoke
+
+train: ## QLoRA fine-tune the base model on train.jsonl -> $(ADAPTER)
+	cd $(CURDIR) && uv run python -m train.finetune_qlora \
+		--base-model $(BASE_MODEL) --out $(ADAPTER)
+
+eval-finetune: ## Eval the fine-tuned adapter on the frozen test set (LLM judge)
+	cd $(CURDIR) && uv run python -m eval.eval_suite --mode hf \
+		--base-model $(BASE_MODEL) --adapter $(ADAPTER) --judge llm \
+		--out runs/scorecard-v1.json --html runs/scorecard-v1.html
 
 # ---------------------------------------------------------------------------
 # Serving (Phase 5+) — placeholder until model is trained
