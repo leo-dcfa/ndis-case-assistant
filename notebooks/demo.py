@@ -285,12 +285,6 @@ def _(THEME):
 
 
 @app.cell
-def _(EXAMPLES, mo, render_card):
-    mo.Html("".join(render_card(ex) for ex in EXAMPLES))
-    return
-
-
-@app.cell
 def _(THEME, mo):
     # ---- How it was built ---------------------------------------------------
     mo.Html(
@@ -313,6 +307,56 @@ def _(THEME, mo):
           </div>
         </div>
         """
+    )
+    return
+
+
+@app.cell
+def _(THEME, mo):
+    # ---- How it works (the eval-driven loop) --------------------------------
+    steps = [
+        (
+            "1",
+            "Define the standard",
+            "A configurable schema of the required NDIS note "
+            "elements — the single source of truth for 'compliant'.",
+        ),
+        (
+            "2",
+            "Generate &amp; verify data",
+            "A local model drafts synthetic examples; each is "
+            "auto-checked for faithfulness, PII and structure — only clean ones are kept.",
+        ),
+        (
+            "3",
+            "Fine-tune locally",
+            "A small model is QLoRA fine-tuned on that data, on one on-prem GPU, in minutes.",
+        ),
+        (
+            "4",
+            "Measure against hard gates",
+            "Scored on a frozen test set + adversarial suites; "
+            "faithfulness and PII must hit 100% before release.",
+        ),
+        ("5", "Iterate", "Failures point straight back to the data — fix, regenerate, retrain."),
+    ]
+    cards = "".join(
+        f"""<div style="flex:1; min-width:150px; background:{THEME["bg"]};
+              border:1px solid {THEME["line"]}; border-radius:12px; padding:14px;">
+            <div style="width:26px; height:26px; border-radius:50%;
+                  background:{THEME["accent"]}; color:#fff; font-weight:700; font-size:13px;
+                  display:flex; align-items:center; justify-content:center;">{n}</div>
+            <div style="margin-top:8px; font-weight:650; color:{THEME["navy"]};
+                  font-size:14px;">{t}</div>
+            <div style="margin-top:4px; color:{THEME["muted"]}; font-size:12.5px;
+                  line-height:1.5;">{d}</div></div>"""
+        for n, t, d in steps
+    )
+    mo.Html(
+        f"""<div style="font-family:{THEME["font"]}; margin:22px 0;">
+          <h2 style="margin:0 0 12px; color:{THEME["navy"]}; font-size:20px;">How it works</h2>
+          <div style="display:flex; gap:12px; flex-wrap:wrap;">{cards}</div>
+        </div>"""
     )
     return
 
@@ -416,6 +460,24 @@ def _(THEME, mo):
         </div>
         """
     )
+    return
+
+
+@app.cell
+def _(THEME, mo):
+    mo.Html(
+        f"""<h2 style="font-family:{THEME["font"]}; color:{THEME["navy"]};
+              margin:30px 0 4px;">A few examples</h2>
+        <p style="font-family:{THEME["font"]}; color:{THEME["muted"]}; margin:0;
+              font-size:14px;">Messy worker input on the left → the structured, compliance-ready
+              note on the right.</p>"""
+    )
+    return
+
+
+@app.cell
+def _(EXAMPLES, mo, render_card):
+    mo.Html("".join(render_card(ex) for ex in EXAMPLES))
     return
 
 

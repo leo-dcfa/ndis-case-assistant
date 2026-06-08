@@ -283,7 +283,7 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
     style_key = random.choice(list(INPUT_STYLES.keys()))
     missing = _choose_missing(stratum, random)
     pii = random.choice(ADV_PII_SNIPPETS) if stratum == "adv_pii_check" else None
-    input_text, extra = _render_input_offline(facts, style_key, stratum, missing, pii)
+    input_text, extra = _render_input_offline(facts, style_key, stratum, missing, pii, random)
 
     target_schema = {
         "participant_id": "...",
@@ -493,8 +493,14 @@ def _render_input_offline(
     stratum: str,
     missing: list[str],
     pii: tuple[str, list[str]] | None,
+    rng: random.Random,
 ) -> tuple[str, dict]:
-    """Render raw worker input (omitting ``missing`` fields, injecting ``pii``)."""
+    """Render raw worker input (omitting ``missing`` fields, injecting ``pii``).
+
+    PII is woven into a *varied* position each time — not always a droppable
+    "aside:" line — so the model must learn to redact PII anywhere, not just
+    delete one line (the failure mode the v2 eval exposed).
+    """
     extra: dict[str, Any] = {}
     miss = set(missing)
 
@@ -509,6 +515,7 @@ def _render_input_offline(
     ]
     lines = [text for key, text in optional_lines if key not in miss]
     lines.append(f"present: {'yes' if facts['present'] else 'no'}")
+    did_idx = len(lines)
     lines.append(f"did: {facts['activity']}")
     if facts["risk"]:
         lines.append(f"note: {facts['risk']}")
@@ -519,7 +526,15 @@ def _render_input_offline(
 
     if pii is not None:
         snippet, forbidden = pii
-        lines.append(f"aside: {snippet}")
+        where = rng.choice(["aside", "note", "inline_did", "trailing"])
+        if where == "aside":
+            lines.append(f"aside: {snippet}")
+        elif where == "note":
+            lines.insert(did_idx + 1, f"note - {snippet}")
+        elif where == "inline_did":  # woven into a content line, not a droppable line
+            lines[did_idx] = f"{lines[did_idx]} ({snippet})"
+        else:  # trailing free fragment
+            lines.append(snippet)
         extra["pii_injected"] = {"snippet": snippet, "forbidden": forbidden}
 
     text = "\n".join(lines)
@@ -597,7 +612,7 @@ def generate_one_offline(stratum: str, rng: random.Random) -> dict[str, Any]:
     style = rng.choice(list(INPUT_STYLES.keys()))
     missing = _choose_missing(stratum, rng)
     pii = rng.choice(ADV_PII_SNIPPETS) if stratum == "adv_pii_check" else None
-    text, extra = _render_input_offline(facts, style, stratum, missing, pii)
+    text, extra = _render_input_offline(facts, style, stratum, missing, pii, rng)
     target = _render_target_offline(facts, stratum, missing)
     obj: dict[str, Any] = {"input": text, "target": target}
     if pii is not None:
@@ -622,11 +637,11 @@ def _dedup_key(text: str) -> str:
 # so training data teaches them, not just routine notes. --count scales these
 # proportionally. ~59% varied routine, ~41% hard behaviours.
 STRATUM_PLAN = {
-    "routine_session": 110,
-    "incident": 50,
-    "capacity_building": 50,
-    "sparse_input": 55,
-    "adv_pii_check": 45,
+    "routine_session": 100,
+    "incident": 45,
+    "capacity_building": 45,
+    "sparse_input": 50,
+    "adv_pii_check": 80,
     "adv_missing_field": 45,
 }
 
