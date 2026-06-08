@@ -102,7 +102,14 @@ def run(args: argparse.Namespace) -> int:
             failure_suites.ideal_examples() if args.mode == "dummy" else []
         )
         model = build_model(args.mode, golden_examples)
-    judge = make_judge(args.judge)
+
+    judge_kwargs: dict[str, Any] = {}
+    if args.judge == "llm":
+        if args.judge_url:
+            judge_kwargs["base_url"] = args.judge_url
+        if args.judge_model:
+            judge_kwargs["model"] = args.judge_model
+    judge = make_judge(args.judge, **judge_kwargs)
 
     scores = [score_example(ex, model, judge) for ex in examples]
     suites = failure_suites.run_all(model, judge)
@@ -145,6 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         choices=["heuristic", "llm"],
         help="Judge for fuzzy dimensions.",
     )
+    parser.add_argument(
+        "--judge-url",
+        default=None,
+        help="OpenAI-compatible base_url for the LLM judge (e.g. a MacBook running Ollama: "
+        "http://<mac-ip>:11434/v1). Lets the 8B draft on the GPU while the 27B judges elsewhere.",
+    )
+    parser.add_argument("--judge-model", default=None, help="Override the LLM judge model.")
     parser.add_argument("--split", default="test", choices=list(SPLIT_FILES))
     parser.add_argument("--splits-dir", default="data/splits")
     parser.add_argument("--limit", type=int, default=0, help="Cap number of examples (0 = all).")

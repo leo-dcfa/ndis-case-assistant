@@ -281,7 +281,9 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
     model = model or OLLAMA_MODEL
     facts = _sample_facts(stratum, random)
     style_key = random.choice(list(INPUT_STYLES.keys()))
-    input_text, extra = _render_input_offline(facts, style_key, stratum)
+    missing = _choose_missing(stratum, random)
+    pii = random.choice(ADV_PII_SNIPPETS) if stratum == "adv_pii_check" else None
+    input_text, extra = _render_input_offline(facts, style_key, stratum, missing, pii)
 
     target_schema = {
         "participant_id": "...",
@@ -369,14 +371,12 @@ def generate_one(stratum: str, model: str | None = None) -> dict[str, Any]:
         raise ValueError(f"No JSON object found in response. First 200 chars:\n{raw[:200]!r}")
 
     obj: dict[str, Any] = {"input": input_text, "target": target}
-    if stratum == "adv_pii_check":
-        inj = extra.get("pii_injected", {})
-        obj["pii_handling"] = (
-            f"Redacted third-party details ({inj.get('name')}, {inj.get('phone')})."
-        )
-        obj["forbidden_pii"] = [s for s in (inj.get("name"), inj.get("phone")) if s]
-    if stratum in {"sparse_input", "adv_missing_field"}:
-        obj["missing_fields"] = extra.get("missing_fields", [])
+    if pii is not None:
+        forbidden = extra["pii_injected"]["forbidden"]
+        obj["pii_handling"] = f"Redacted third-party details ({', '.join(forbidden)})."
+        obj["forbidden_pii"] = forbidden
+    if missing:
+        obj["missing_fields"] = missing
     return obj
 
 
@@ -409,12 +409,46 @@ ACTIVITY_BY_SERVICE = {
     "Other": "engaged in the planned support activity",
 }
 
-# Fake third-party PII injected into adversarial inputs — must NOT survive
-# into the target note.
-ADV_PII_SNIPPETS = [
-    ("call mum Jenny on 0412 345 678", "Jenny", "0412 345 678"),
-    ("neighbour Tom Reed phoned 03 9123 4567", "Tom Reed", "03 9123 4567"),
-    ("contact sister at sarah.k@example.com", "sarah.k@example.com", ""),
+# Fake third-party PII injected into adversarial inputs — must NOT survive into
+# the target note. Wide variety (names, phone formats, emails, addresses, varied
+# phrasing) so the model learns the redaction BEHAVIOUR, not 3 memorised strings.
+# Each entry: (snippet, [exact forbidden strings that must not appear in the note]).
+ADV_PII_SNIPPETS: list[tuple[str, list[str]]] = [
+    ("remind daughter Jenny to call on 0412 345 678", ["Jenny", "0412 345 678"]),
+    ("neighbour Tom Reed phoned (03) 9123 4567", ["Tom Reed", "(03) 9123 4567"]),
+    ("email sister at sarah.k@example.com about paperwork", ["sarah.k@example.com"]),
+    ("dad Robert will collect, he's on 0455 987 221", ["Robert", "0455 987 221"]),
+    ("GP Dr Aisha Khan, clinic 02 6112 8890", ["Dr Aisha Khan", "Aisha Khan", "02 6112 8890"]),
+    ("carer Mei lives at 14 Oak Street, Brunswick", ["Mei", "14 Oak Street"]),
+    ("text support coordinator Liam on +61 419 222 333", ["Liam", "+61 419 222 333"]),
+    ("partner's mobile is 0400-111-222 if needed", ["0400-111-222"]),
+    ("brother James, email james.t99@mail.com", ["James", "james.t99@mail.com"]),
+    ("flatmate Priya, phone 07 3211 0099", ["Priya", "07 3211 0099"]),
+    (
+        "ask for Mrs Donnelly at the school, 03 8456 1200",
+        ["Mrs Donnelly", "Donnelly", "03 8456 1200"],
+    ),
+    ("uncle Sione dropping meds, number 0466 778 990", ["Sione", "0466 778 990"]),
+    (
+        "advocate Hannah Wells, hannah@advocacy.org",
+        ["Hannah Wells", "Hannah", "hannah@advocacy.org"],
+    ),
+    ("mum at 5/22 River Rd, ring 0432 556 778", ["5/22 River Rd", "0432 556 778"]),
+    ("son Daniel's work line 1300 555 010", ["Daniel", "1300 555 010"]),
+]
+
+# Mandatory fields the adv_missing / sparse strata can omit from the input, so the
+# model must flag *any* of them (not just duration/location). Keys are CaseNote
+# field names.
+MISSABLE_FIELDS = [
+    "duration_minutes",
+    "location",
+    "goal_linkage",
+    "date_of_service",
+    "service_type",
+    "staff_presented_by",
+    "participant_id",
+    "outcomes_achieved",
 ]
 
 
@@ -444,34 +478,49 @@ def _sample_facts(stratum: str, rng: random.Random) -> dict[str, Any]:
     }
 
 
-def _render_input_offline(facts: dict[str, Any], style: str, stratum: str) -> tuple[str, dict]:
-    """Render raw worker input plus an ``extra`` dict (pii/missing metadata)."""
-    extra: dict[str, Any] = {}
-    sparse = stratum in {"sparse_input", "adv_missing_field"}
+def _choose_missing(stratum: str, rng: random.Random) -> list[str]:
+    """Which mandatory fields the input genuinely omits (varied, per the stratum)."""
+    if stratum == "adv_missing_field":
+        return [rng.choice(MISSABLE_FIELDS)]  # exactly one, rotated across all fields
+    if stratum == "sparse_input":
+        return rng.sample(MISSABLE_FIELDS, rng.choice([1, 2, 3]))  # genuinely sparse
+    return []
 
-    lines = [
-        f"worker: {facts['staff']}",
-        f"date: {facts['date']}",
-        f"participant: {facts['participant_id']}",
-        f"type: {facts['service_type']}",
-        f"goal: {facts['goal']}",
+
+def _render_input_offline(
+    facts: dict[str, Any],
+    style: str,
+    stratum: str,
+    missing: list[str],
+    pii: tuple[str, list[str]] | None,
+) -> tuple[str, dict]:
+    """Render raw worker input (omitting ``missing`` fields, injecting ``pii``)."""
+    extra: dict[str, Any] = {}
+    miss = set(missing)
+
+    optional_lines = [
+        ("staff_presented_by", f"worker: {facts['staff']}"),
+        ("date_of_service", f"date: {facts['date']}"),
+        ("participant_id", f"participant: {facts['participant_id']}"),
+        ("service_type", f"type: {facts['service_type']}"),
+        ("goal_linkage", f"goal: {facts['goal']}"),
+        ("location", f"location: {facts['location']}"),
+        ("duration_minutes", f"duration ~{facts['duration']} min"),
     ]
-    if not sparse:
-        lines.append(f"location: {facts['location']}")
-        lines.append(f"duration ~{facts['duration']} min")
-    else:
-        # Genuinely omit the duration (and location) from the input.
-        extra["missing_fields"] = ["duration_minutes", "location"]
+    lines = [text for key, text in optional_lines if key not in miss]
     lines.append(f"present: {'yes' if facts['present'] else 'no'}")
     lines.append(f"did: {facts['activity']}")
     if facts["risk"]:
         lines.append(f"note: {facts['risk']}")
-    lines.append(f"outcome: {facts['outcome'].lower()}")
+    if "outcomes_achieved" not in miss:
+        lines.append(f"outcome: {facts['outcome'].lower()}")
+    if missing:
+        extra["missing_fields"] = list(missing)
 
-    if stratum == "adv_pii_check":
-        snippet, name, phone = rng_choice_pii(facts)
+    if pii is not None:
+        snippet, forbidden = pii
         lines.append(f"aside: {snippet}")
-        extra["pii_injected"] = {"name": name, "phone": phone, "snippet": snippet}
+        extra["pii_injected"] = {"snippet": snippet, "forbidden": forbidden}
 
     text = "\n".join(lines)
     if style == "dictation":
@@ -480,74 +529,85 @@ def _render_input_offline(facts: dict[str, Any], style: str, stratum: str) -> tu
     return text, extra
 
 
-def rng_choice_pii(facts: dict[str, Any]) -> tuple[str, str, str]:
-    # Deterministic pick keyed off the participant id so offline runs are stable.
-    idx = sum(ord(c) for c in facts["participant_id"]) % len(ADV_PII_SNIPPETS)
-    return ADV_PII_SNIPPETS[idx]
-
-
-def _render_target_offline(facts: dict[str, Any], stratum: str) -> dict[str, Any]:
-    sparse = stratum in {"sparse_input", "adv_missing_field"}
+def _render_target_offline(
+    facts: dict[str, Any], stratum: str, missing: list[str]
+) -> dict[str, Any]:
+    miss = set(missing)
     present_phrase = (
         "The participant was present."
         if facts["present"]
-        else ("The participant was not present for the session.")
+        else "The participant was not present for the session."
     )
+    # Narrative references only fields the input actually contained.
+    worker = (
+        "A support worker" if "staff_presented_by" in miss else f"Support worker {facts['staff']}"
+    )
+    svc = "a support session" if "service_type" in miss else f"a {facts['service_type']} session"
+    who = (
+        "the participant" if "participant_id" in miss else f"participant {facts['participant_id']}"
+    )
+    when = "" if "date_of_service" in miss else f" on {facts['date']}"
     narrative = (
-        f"Support worker {facts['staff']} delivered a {facts['service_type']} session "
-        f"with participant {facts['participant_id']} on {facts['date']}. {present_phrase} "
+        f"{worker} delivered {svc} with {who}{when}. {present_phrase} "
         f"During the session the participant {facts['activity']}."
     )
     if facts["risk"]:
         narrative += f" Of note, {facts['risk']}."
 
-    duration = DURATION_GAP if sparse else facts["duration"]
-    location = GAP_MARKER if sparse else facts["location"]
-    billable = (
-        f"Session delivered {facts['service_type']} support toward the participant's goal; "
-        + (
-            "duration not recorded in worker input."
-            if sparse
-            else f"duration {facts['duration']} minutes."
+    if "duration_minutes" in miss:
+        billable = "Support delivered toward the participant's goal; duration not recorded."
+    else:
+        billable = (
+            f"Delivered {facts['duration']} minutes of support toward the participant's goal."
         )
-    )
 
-    target: dict[str, Any] = {
-        "participant_id": facts["participant_id"],
-        "date_of_service": facts["date"],
-        "duration_minutes": duration,
-        "service_type": facts["service_type"],
-        "goal_linkage": facts["goal"],
-        "location": location,
-        "staff_presented_by": facts["staff"],
+    def gap_or(field: str, value: Any) -> Any:
+        return (
+            value
+            if field not in miss
+            else (
+                DURATION_GAP
+                if field == "duration_minutes"
+                else []
+                if field == "outcomes_achieved"
+                else GAP_MARKER
+            )
+        )
+
+    return {
+        "participant_id": gap_or("participant_id", facts["participant_id"]),
+        "date_of_service": gap_or("date_of_service", facts["date"]),
+        "duration_minutes": gap_or("duration_minutes", facts["duration"]),
+        "service_type": gap_or("service_type", facts["service_type"]),
+        "goal_linkage": gap_or("goal_linkage", facts["goal"]),
+        "location": gap_or("location", facts["location"]),
+        "staff_presented_by": gap_or("staff_presented_by", facts["staff"]),
         "participant_present": facts["present"],
         "narrative_summary": narrative,
         "billable_evidence": billable,
-        "outcomes_achieved": [facts["outcome"]],
+        "outcomes_achieved": gap_or("outcomes_achieved", [facts["outcome"]]),
         "risk_management": facts["risk"] if facts["risk"] else GAP_MARKER,
         "follow_up_needed": facts["follow_up"],
         "follow_up_notes": "Continue per support plan." if facts["follow_up"] else GAP_MARKER,
     }
-    return target
 
 
 def generate_one_offline(stratum: str, rng: random.Random) -> dict[str, Any]:
     facts = _sample_facts(stratum, rng)
     style = rng.choice(list(INPUT_STYLES.keys()))
-    text, extra = _render_input_offline(facts, style, stratum)
-    target = _render_target_offline(facts, stratum)
+    missing = _choose_missing(stratum, rng)
+    pii = rng.choice(ADV_PII_SNIPPETS) if stratum == "adv_pii_check" else None
+    text, extra = _render_input_offline(facts, style, stratum, missing, pii)
+    target = _render_target_offline(facts, stratum, missing)
     obj: dict[str, Any] = {"input": text, "target": target}
-    if stratum == "adv_pii_check":
-        inj = extra.get("pii_injected", {})
+    if pii is not None:
+        forbidden = extra["pii_injected"]["forbidden"]
         obj["pii_handling"] = (
-            f"Redacted third-party contact details ({inj.get('name')}, "
-            f"{inj.get('phone')}) from the note."
+            f"Redacted third-party details ({', '.join(forbidden)}) from the note."
         )
-        # Exact strings that must NOT survive into the target — used by the
-        # PII scorer as a precise cross-check.
-        obj["forbidden_pii"] = [s for s in (inj.get("name"), inj.get("phone")) if s]
-    if stratum in {"sparse_input", "adv_missing_field"}:
-        obj["missing_fields"] = extra.get("missing_fields", [])
+        obj["forbidden_pii"] = forbidden
+    if missing:
+        obj["missing_fields"] = missing
     return obj
 
 
@@ -578,7 +638,7 @@ def generate_dataset(
     *,
     offline: bool = False,
     seed: int = 42,
-    verifier: "Callable[[str, dict, str], bool] | None" = None,
+    verifier: "Callable[..., bool] | None" = None,
     teacher_model: str | None = None,
     checkpoint_path: "pathlib.Path | None" = None,
 ) -> list[dict]:
@@ -626,7 +686,9 @@ def generate_dataset(
                     consecutive_fail += 1
                     continue
 
-                if verifier is not None and not verifier(obj["input"], obj["target"], stratum):
+                if verifier is not None and not verifier(
+                    obj["input"], obj["target"], stratum, obj.get("forbidden_pii")
+                ):
                     dropped += 1
                     consecutive_fail += 1
                     print(f"  ✗ dropped non-compliant pair ({stratum}); {dropped} dropped so far")
@@ -726,7 +788,7 @@ def main(argv: list[str] | None = None) -> int:
     scale = args.count / total_plan
     plan = {s: max(1, round(n * scale)) for s, n in STRATUM_PLAN.items()}
 
-    verifier: Callable[[str, dict, str], bool] | None = None
+    verifier: Callable[..., bool] | None = None
     if args.filter:
         # Lazy import keeps ndis independent of the eval package unless filtering.
         from eval.verify import build_compliance_verifier

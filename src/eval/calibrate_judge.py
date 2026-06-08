@@ -58,7 +58,12 @@ def run(args: argparse.Namespace) -> int:
         print(f"[calibrate] labels not found: {path}", file=sys.stderr)
         return 2
     rows = _load_labels(path)
-    judge = make_judge(args.judge, **({"model": args.model} if args.model else {}))
+    judge_kwargs: dict[str, Any] = {}
+    if args.model:
+        judge_kwargs["model"] = args.model
+    if args.judge_url:
+        judge_kwargs["base_url"] = args.judge_url
+    judge = make_judge(args.judge, **judge_kwargs)
 
     h_faith, j_faith, h_reg, j_reg = [], [], [], []
     exported: list[dict[str, Any]] = []
@@ -113,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report judge-vs-human agreement.")
     parser.add_argument("--judge", default="heuristic", choices=["heuristic", "llm"])
     parser.add_argument("--model", default=None, help="Override judge model (llm only).")
+    parser.add_argument(
+        "--judge-url", default=None, help="OpenAI-compatible base_url (e.g. LM Studio on the Mac)."
+    )
     parser.add_argument("--labels", default=None, help="Path to a human_labels.jsonl.")
     parser.add_argument("--export", default=None, help="Write per-example agreement to this path.")
     return run(parser.parse_args(argv))

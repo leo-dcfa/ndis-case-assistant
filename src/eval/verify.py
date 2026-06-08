@@ -26,16 +26,19 @@ from eval.rubric import score_pii, score_structure
 
 def build_compliance_verifier(
     judge_kind: str = "heuristic", *, verbose: bool = True
-) -> Callable[[str, dict, str], bool]:
-    """Return a ``verify(input, target, stratum) -> bool`` gate.
+) -> Callable[..., bool]:
+    """Return a ``verify(input, target, stratum, forbidden=None) -> bool`` gate.
 
     ``judge_kind`` selects the faithfulness judge: 'heuristic' (instant, catches
     number/ID fabrication only) or 'llm' (local 27B, catches embellished prose —
-    recommended for real training data).
+    recommended for real training data). ``forbidden`` is the exact list of
+    third-party PII strings that must not survive (names regex can't catch).
     """
     judge = make_judge(judge_kind)
 
-    def verify(input_text: str, target: dict, stratum: str) -> bool:
+    def verify(
+        input_text: str, target: dict, stratum: str, forbidden: list[str] | None = None
+    ) -> bool:
         # 1+2. Structure / schema (deterministic, instant).
         st = score_structure(target, stratum=stratum)
         if not st.passed:
@@ -52,8 +55,8 @@ def build_compliance_verifier(
                 print(f"    ✗ structure: {', '.join(reasons) or 'present_ok failed'}")
             return False
 
-        # 3. PII (deterministic, instant).
-        pii = score_pii(target)
+        # 3. PII (deterministic, instant) — regex + exact forbidden third-party strings.
+        pii = score_pii(target, forbidden=forbidden)
         if not pii.is_clean:
             if verbose:
                 print(f"    ✗ pii leak: {pii.leaked_items}")

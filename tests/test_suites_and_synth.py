@@ -66,9 +66,24 @@ def test_offline_adv_pii_carries_forbidden_strings():
 
 
 def test_sparse_targets_flag_gaps():
-    records = generate_dataset({"sparse_input": 3}, offline=True, seed=5)
+    # Sparse inputs omit a *varied* set of fields; every sparse target must flag
+    # at least one mandatory field as a gap rather than invent it.
+    from ndis.synth_generate import MISSABLE_FIELDS
+
+    records = generate_dataset({"sparse_input": 5}, offline=True, seed=5)
+    assert records
     for rec in records:
-        assert is_gap(rec["target"]["duration_minutes"])
+        assert any(is_gap(rec["target"][f]) for f in MISSABLE_FIELDS), (
+            f"sparse target has no flagged gap: {rec['target']}"
+        )
+
+
+def test_adv_missing_rotates_across_fields():
+    # The adv_missing stratum must exercise more than just duration/location,
+    # or the model never learns to flag other missing mandatory fields.
+    records = generate_dataset({"adv_missing_field": 40}, offline=True, seed=2)
+    flagged = {f for r in records for f in r.get("missing_fields", [])}
+    assert len(flagged) >= 5, f"expected varied missing fields, got {flagged}"
 
 
 def test_stratified_split_freezes_every_stratum():
