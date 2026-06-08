@@ -38,7 +38,9 @@ weights/
 *.safetensors
 
 # Notebooks (if any)
-notebooks/
+# Track marimo .py notebooks (clean source); ignore Jupyter checkpoints/outputs
+notebooks/.marimo/
+.ipynb_checkpoints/
 *.ipynb
 
 # Logs
