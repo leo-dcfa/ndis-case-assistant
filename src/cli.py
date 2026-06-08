@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import sys
 
 import typer
 
@@ -64,6 +65,96 @@ def deid(
     else:
         typer.echo("No PII detected.")
     typer.echo(redacted)
+
+
+@cli.command("draft")
+def draft(
+    input_text: str | None = typer.Argument(None, help="Worker's rough note. Omit to read stdin."),
+    file: str | None = typer.Option(
+        None, "--file", "-f", help="Read the worker note from a file."
+    ),
+    mode: str = typer.Option("hf", help="hf = fine-tuned local model; openai = Ollama base."),
+    base_model: str = typer.Option("Qwen/Qwen3-8B", help="Base model id/path (hf mode)."),
+    adapter: str = typer.Option(
+        "runs/adapters/qwen3-8b-v1", help="LoRA adapter dir (hf mode); ignored if missing."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print only the raw JSON note."),
+) -> None:
+    """Draft a structured NDIS case note from a worker's rough input."""
+    if file is not None:
+        text = pathlib.Path(file).read_text(encoding="utf-8")
+    elif input_text is not None:
+        text = input_text
+    elif not sys.stdin.isatty():
+        text = sys.stdin.read()
+    else:
+        raise typer.BadParameter("Provide INPUT_TEXT, --file, or pipe text via stdin.")
+    text = text.strip()
+    if not text:
+        raise typer.BadParameter("Empty input.")
+
+    # Build the model (heavy imports kept local so other CLI commands stay light).
+    if mode == "hf":
+        from eval.model_under_test import HFModel
+
+        adapter_dir: str | None = adapter
+        if adapter and not pathlib.Path(adapter).exists():
+            typer.echo(f"[draft] adapter '{adapter}' not found — using base model only.", err=True)
+            adapter_dir = None
+        typer.echo(
+            f"[draft] loading {base_model}{f' + {adapter_dir}' if adapter_dir else ''} ...",
+            err=True,
+        )
+        model: object = HFModel(base_model, adapter=adapter_dir)
+    elif mode == "openai":
+        from eval.model_under_test import OpenAIModel
+
+        ollama_model = "qwen3:8b" if base_model == "Qwen/Qwen3-8B" else base_model
+        model = OpenAIModel(model=ollama_model)
+    else:
+        raise typer.BadParameter("mode must be 'hf' or 'openai'.")
+
+    note = model.draft_note(text)  # type: ignore[attr-defined]
+
+    if as_json:
+        typer.echo(json.dumps(note, indent=2, ensure_ascii=False))
+        return
+
+    # Rendered, in-order view + a quick compliance read.
+    from ndis.config_loader import get_config
+    from ndis.notes import is_gap
+
+    if not note:
+        typer.echo("⚠ model returned no parseable JSON note.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo("\n── Drafted NDIS case note ───────────────────────────")
+    for field in get_config().required_fields.structure_order:
+        value = note.get(field, "<MISSING>")
+        flag = "  ⟵ [not recorded]" if is_gap(value) else ""
+        typer.echo(f"  {field:<20} {value}{flag}")
+
+    from eval.rubric import score_pii, score_structure
+
+    st = score_structure(note)
+    pii = score_pii(note)
+    typer.echo("\n── Compliance check ─────────────────────────────────")
+    typer.echo(f"  structure:  {'✓ ok' if st.passed else '✗ ' + _structure_reason(st)}")
+    typer.echo(f"  pii-clean:  {'✓ ok' if pii.is_clean else '✗ leaked ' + str(pii.leaked_items)}")
+    typer.echo("\n(full JSON: re-run with --json)")
+
+
+def _structure_reason(st: object) -> str:
+    bits = []
+    if getattr(st, "missing_fields", None):
+        bits.append(f"missing={st.missing_fields}")  # type: ignore[attr-defined]
+    if getattr(st, "gap_fields", None):
+        bits.append(f"unflagged-gaps={st.gap_fields}")  # type: ignore[attr-defined]
+    if getattr(st, "invalid_fields", None):
+        bits.append(f"bad-types={st.invalid_fields}")  # type: ignore[attr-defined]
+    if not getattr(st, "order_ok", True):
+        bits.append("wrong-order")
+    return ", ".join(bits) or "failed"
 
 
 def main() -> None:
