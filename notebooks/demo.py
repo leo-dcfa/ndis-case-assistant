@@ -292,6 +292,135 @@ def _(EXAMPLES, mo, render_card):
 
 @app.cell
 def _(THEME, mo):
+    # ---- How it was built ---------------------------------------------------
+    mo.Html(
+        f"""
+        <div style="font-family:{THEME["font"]}; background:{THEME["navy"]};
+                    color:#dde7f1; border-radius:16px; padding:24px 26px; margin:22px 0;">
+          <div style="font-size:11px; font-weight:700; letter-spacing:.12em;
+                text-transform:uppercase; color:#7fd8d2;">Built &amp; trained on-premises</div>
+          <h2 style="margin:8px 0 12px; color:#ffffff; font-size:20px;">Nothing leaves the building</h2>
+          <div style="display:grid; grid-template-columns:repeat(2,1fr); gap:14px 26px;
+                font-size:14px; line-height:1.55;">
+            <div>🔒 <b>Trained locally</b> — synthetic data generated and the model
+                 fine-tuned (QLoRA) on a <b>single on-prem GPU</b> in minutes.</div>
+            <div>🧾 <b>License-clean</b> — no frontier-model outputs in the training
+                 lineage; only local open-weight models were used.</div>
+            <div>🩺 <b>Privacy by design</b> — runs on-prem / on-device, so participant
+                 data never leaves controlled infrastructure.</div>
+            <div>🧪 <b>Every training example verified</b> — auto-checked for faithfulness,
+                 PII and structure before it was allowed into the dataset.</div>
+          </div>
+        </div>
+        """
+    )
+    return
+
+
+@app.cell
+def _(THEME, mo):
+    # ---- Results so far -----------------------------------------------------
+    def _row(metric, base, v1, note, warn=False):
+        v1col = THEME["gap"] if warn else THEME["ok"]
+        return f"""<tr>
+          <td style="padding:9px 10px; border-bottom:1px solid {THEME["line"]};
+                color:{THEME["ink"]};">{metric}</td>
+          <td style="padding:9px 10px; border-bottom:1px solid {THEME["line"]};
+                text-align:center; color:{THEME["muted"]};">{base}</td>
+          <td style="padding:9px 10px; border-bottom:1px solid {THEME["line"]};
+                text-align:center; font-weight:700; color:{v1col};">{v1}</td>
+          <td style="padding:9px 10px; border-bottom:1px solid {THEME["line"]};
+                color:{THEME["muted"]}; font-size:13px;">{note}</td></tr>"""
+
+    rows = (
+        _row("Structural compliance", "0%", "100%", "biggest fix — valid schema every time")
+        + _row("Faithfulness (realistic notes)", "—", "~100%", "no invented facts in-distribution")
+        + _row("Fabrication suite (hard gate)", "80%", "100%", "resists tempting edge cases")
+        + _row("PII redaction (hard gate)", "60%", "50%", "v2 in progress — see below", warn=True)
+        + _row(
+            "Missing-field flagging (hard gate)",
+            "100%",
+            "60%",
+            "v2 in progress — see below",
+            warn=True,
+        )
+    )
+    mo.Html(
+        f"""
+        <div style="font-family:{THEME["font"]}; background:{THEME["card"]};
+              border:1px solid {THEME["line"]}; border-radius:16px; padding:22px 24px; margin:22px 0;">
+          <h2 style="margin:0 0 4px; color:{THEME["navy"]}; font-size:20px;">Results so far (v1)</h2>
+          <p style="margin:0 0 14px; color:{THEME["muted"]}; font-size:14px;">
+            Measured on a frozen held-out test set plus adversarial safety suites.</p>
+          <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            <tr style="text-align:left; color:{THEME["muted"]}; font-size:11px;
+                  text-transform:uppercase; letter-spacing:.06em;">
+              <th style="padding:6px 10px;">Metric</th>
+              <th style="padding:6px 10px; text-align:center;">Un-tuned</th>
+              <th style="padding:6px 10px; text-align:center;">Fine-tuned v1</th>
+              <th style="padding:6px 10px;">Notes</th></tr>
+            {rows}
+          </table>
+          <div style="margin-top:16px; background:{THEME["accent_soft"]};
+                border-left:3px solid {THEME["accent"]}; border-radius:0 8px 8px 0;
+                padding:12px 14px; color:{THEME["navy"]}; font-size:13.5px; line-height:1.55;">
+            <b>The improvement loop:</b> fine-tuning fixed structure (0→100%) and fabrication
+            (80→100%). The evaluation then caught two safety gaps on adversarial cases — the model
+            had learned surface forms, not behaviours. We traced it to the training data, widened
+            the adversarial variety, and <b>v2 is regenerating now</b> to close them.
+            <b>Nothing is approved for release until PII and faithfulness hit 100%.</b>
+          </div>
+          <p style="margin:12px 0 0; color:{THEME["muted"]}; font-size:12.5px; line-height:1.5;">
+            <b>Caveats:</b> these use a fast automated grader (a rigorous model-judged pass is
+            pending), and the test set is synthetic — real-world validation follows once
+            de-identified real notes are available.</p>
+        </div>
+        """
+    )
+    return
+
+
+@app.cell
+def _(THEME, mo):
+    # ---- Deployment & cost --------------------------------------------------
+    mo.Html(
+        f"""
+        <div style="font-family:{THEME["font"]}; background:{THEME["card"]};
+              border:1px solid {THEME["line"]}; border-radius:16px; padding:22px 24px; margin:22px 0;">
+          <h2 style="margin:0 0 14px; color:{THEME["navy"]}; font-size:20px;">Deployment &amp; cost</h2>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+            <div>
+              <div style="font-size:11px; font-weight:700; letter-spacing:.08em;
+                    text-transform:uppercase; color:{THEME["accent"]};">Runs on-device</div>
+              <ul style="margin:8px 0 0; padding-left:18px; color:{THEME["ink"]};
+                    font-size:14px; line-height:1.6;">
+                <li><b>Any laptop / desktop:</b> yes today (≈6&nbsp;GB, 4-bit).</li>
+                <li><b>Phone:</b> the smaller shrunk model (1.5–4B, ≈1–2&nbsp;GB) is
+                    on-device-viable; the 8B is laptop-class.</li>
+                <li>No internet required — fully offline.</li>
+              </ul>
+            </div>
+            <div>
+              <div style="font-size:11px; font-weight:700; letter-spacing:.08em;
+                    text-transform:uppercase; color:{THEME["accent"]};">If hosted on cloud GPU</div>
+              <ul style="margin:8px 0 0; padding-left:18px; color:{THEME["ink"]};
+                    font-size:14px; line-height:1.6;">
+                <li>One small GPU instance: <b>~$0.50–1.00 / hour</b>
+                    (~$200–730/mo, less with spot/reserved).</li>
+                <li>Batched serving → thousands of notes/day →
+                    <b>a fraction of a cent per note</b>.</li>
+                <li>Compare: a frontier API charges per call <i>and</i> sends data off-site.</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        """
+    )
+    return
+
+
+@app.cell
+def _(THEME, mo):
     mo.Html(
         f"""<h2 style="font-family:{THEME["font"]}; color:{THEME["navy"]};
               margin:30px 0 4px;">Try it live</h2>
