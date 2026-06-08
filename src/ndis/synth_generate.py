@@ -449,6 +449,7 @@ MISSABLE_FIELDS = [
     "staff_presented_by",
     "participant_id",
     "outcomes_achieved",
+    "billable_evidence",  # input lacks any activity/billing detail -> must be flagged
 ]
 
 
@@ -516,7 +517,8 @@ def _render_input_offline(
     lines = [text for key, text in optional_lines if key not in miss]
     lines.append(f"present: {'yes' if facts['present'] else 'no'}")
     did_idx = len(lines)
-    lines.append(f"did: {facts['activity']}")
+    if "billable_evidence" not in miss:  # the activity line is the billing evidence
+        lines.append(f"did: {facts['activity']}")
     if facts["risk"]:
         lines.append(f"note: {facts['risk']}")
     if "outcomes_achieved" not in miss:
@@ -562,14 +564,17 @@ def _render_target_offline(
         "the participant" if "participant_id" in miss else f"participant {facts['participant_id']}"
     )
     when = "" if "date_of_service" in miss else f" on {facts['date']}"
-    narrative = (
-        f"{worker} delivered {svc} with {who}{when}. {present_phrase} "
-        f"During the session the participant {facts['activity']}."
-    )
+    narrative = f"{worker} delivered {svc} with {who}{when}. {present_phrase}"
+    if "billable_evidence" not in miss:  # only state the activity if it was recorded
+        narrative += f" During the session the participant {facts['activity']}."
+    else:
+        narrative += " No activity detail was recorded in the worker's input."
     if facts["risk"]:
         narrative += f" Of note, {facts['risk']}."
 
-    if "duration_minutes" in miss:
+    if "billable_evidence" in miss:
+        billable = GAP_MARKER
+    elif "duration_minutes" in miss:
         billable = "Support delivered toward the participant's goal; duration not recorded."
     else:
         billable = (
