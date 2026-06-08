@@ -164,6 +164,29 @@ class HFModel:
         return coerce_draft(text)
 
 
+class GuardedModel:
+    """Wrap any model with the deterministic output-side PII scrubber.
+
+    This is the *served* configuration: the model drafts, then known PII patterns
+    and cue-introduced third-party names are stripped before the note is emitted —
+    so the PII hard gate is guaranteed, not probabilistic. Evaluating with this
+    wrapper measures what would actually ship.
+    """
+
+    def __init__(self, inner: ModelUnderTest) -> None:
+        self.inner = inner
+        self.name = f"guarded({inner.name})"
+
+    def draft_note(self, input_text: str, stratum: str | None = None) -> dict[str, Any]:
+        from ndis.deidentify import redact_note
+
+        note = self.inner.draft_note(input_text, stratum=stratum)
+        if not note:
+            return note
+        clean, _changed = redact_note(note, input_text)
+        return clean
+
+
 def _crude_parse(text: str) -> dict[str, str]:
     """Naive 'key: value' line scraper used by NaiveModel."""
     out: dict[str, str] = {}

@@ -103,6 +103,11 @@ def run(args: argparse.Namespace) -> int:
         )
         model = build_model(args.mode, golden_examples)
 
+    if args.guardrail:
+        from eval.model_under_test import GuardedModel
+
+        model = GuardedModel(model)
+
     judge_kwargs: dict[str, Any] = {}
     if args.judge == "llm":
         if args.judge_url:
@@ -146,6 +151,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--base-model", default=None, help="HF base model id/path (--mode hf).")
     parser.add_argument("--adapter", default=None, help="LoRA adapter dir (--mode hf).")
+    parser.add_argument(
+        "--guardrail",
+        action="store_true",
+        help="Wrap the model with the deterministic output-side PII scrubber (the served config).",
+    )
     parser.add_argument(
         "--judge",
         default="heuristic",

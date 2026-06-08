@@ -79,6 +79,11 @@ def draft(
         "runs/adapters/qwen3-8b-v1", help="LoRA adapter dir (hf mode); ignored if missing."
     ),
     as_json: bool = typer.Option(False, "--json", help="Print only the raw JSON note."),
+    guardrail: bool = typer.Option(
+        True,
+        "--guardrail/--no-guardrail",
+        help="Apply the output-side PII scrubber (the served config).",
+    ),
 ) -> None:
     """Draft a structured NDIS case note from a worker's rough input."""
     if file is not None:
@@ -113,6 +118,11 @@ def draft(
         model = OpenAIModel(model=ollama_model)
     else:
         raise typer.BadParameter("mode must be 'hf' or 'openai'.")
+
+    if guardrail:
+        from eval.model_under_test import GuardedModel
+
+        model = GuardedModel(model)  # type: ignore[arg-type]
 
     note = model.draft_note(text)  # type: ignore[attr-defined]
 
